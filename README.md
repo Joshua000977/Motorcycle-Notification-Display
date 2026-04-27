@@ -20,7 +20,7 @@ Phone (Android App)
 → Display
 
 ## Tech Stack
-- ESP32 (Arduino / NimBLE)
+- Seeed Studio-C3 (Arduino / NimBLE)
 - Android App (Kotlin)
 - BLE communication
 - OLED/TFT Display
