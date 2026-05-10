@@ -93,6 +93,11 @@ class BleManager {
                 }
 
                 log("Found device: ${device.name}")
+                if(peripheral == null){
+                    log("Auto connecting")
+                    connect(device)
+
+                }
             }
         }
     }

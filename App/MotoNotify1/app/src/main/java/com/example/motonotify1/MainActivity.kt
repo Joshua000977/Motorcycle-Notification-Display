@@ -88,6 +88,7 @@ private fun BleTestScreen(modifier: Modifier = Modifier) {
     }
 
     DisposableEffect(Unit) {
+        bleManager.startScan()
         onDispose {
             bleManager.close()
         }
@@ -103,9 +104,9 @@ private fun BleTestScreen(modifier: Modifier = Modifier) {
             text = "State: ${uiState.connectionState}${if (uiState.isScanning) " | Scanning" else ""}",
             style = MaterialTheme.typography.titleMedium
         )
-
         Button(
             onClick = {
+
                 permissions.forEach {
 
                     bleManager.log(
@@ -117,17 +118,21 @@ private fun BleTestScreen(modifier: Modifier = Modifier) {
                         }"
                     )
                 }
-                if (hasAllPermissions()) {
 
-                    bleManager.log("All permissions granted")
+                permissionLauncher.launch(permissions)
+            }
+        ) {
+            Text("Request Permissions")
+        }
+        Button(
+            onClick = {
+                if (hasAllPermissions()) {
 
                     bleManager.startScan()
 
                 } else {
 
-                    bleManager.log("Requesting permissions")
-
-                    permissionLauncher.launch(permissions)
+                    bleManager.log("Missing permissions")
                 }
             }
         ) {
