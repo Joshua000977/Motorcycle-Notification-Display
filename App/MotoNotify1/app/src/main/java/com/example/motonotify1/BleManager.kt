@@ -17,6 +17,8 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import com.juul.kable.peripheral
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeout
 
 data class BleDeviceUi(
     val name: String,
@@ -39,7 +41,12 @@ class BleManager {
 
     private var scanner: Scanner? = null
     private var peripheral: Peripheral? = null
+    private var lastKnownDevice: BleDeviceUi? = null
     private var scanJob: Job? = null
+    private var connectionJob: Job? = null
+    private var reconnectJob: Job? = null
+
+    private var manualDisconnect = false
 
     private val writeCharacteristic = characteristicOf(
         service = "6e400001-b5a3-f393-e0a9-e50e24dcca9e",
@@ -102,16 +109,30 @@ class BleManager {
     fun connect(device: BleDeviceUi) {
 
         peripheral = device.peripheral
+        lastKnownDevice = device
+        manualDisconnect = false
+        if (connectionJob?.isActive == true) {
+            log("Already connecting")
+            return
+        }
 
-        scope.launch {
+        connectionJob = scope.launch {
+
 
             try {
-
                 _uiState.update {
                     it.copy(connectionState = "Connecting")
                 }
 
-                device.peripheral.connect()
+                log("Before connect")
+
+                withTimeout(15000) {
+                    device.peripheral.connect()
+                }
+
+                log("After connect")
+
+
 
                 _uiState.update {
                     it.copy(connectionState = "Connected")
@@ -124,20 +145,34 @@ class BleManager {
                     when (state) {
 
                         is State.Connected -> {
+
                             _uiState.update {
                                 it.copy(connectionState = "Connected")
                             }
                         }
 
-                        else -> {
+                        is State.Disconnected -> {
+
+                            log("Disconnected")
+
                             _uiState.update {
                                 it.copy(connectionState = "Disconnected")
                             }
+
+                            if (!manualDisconnect) {
+                                startReconnectLoop()
+                            }
                         }
+
+                        else -> {}
                     }
                 }
 
             } catch (e: Exception) {
+
+                if (e is kotlinx.coroutines.CancellationException) {
+                    return@launch
+                }
 
                 logError("Connection failed", e)
 
@@ -148,8 +183,48 @@ class BleManager {
         }
     }
 
-    fun disconnect() {
+    private fun startReconnectLoop() {
 
+        if (reconnectJob?.isActive == true) {
+            return
+        }
+
+        val device = lastKnownDevice ?: return
+
+        reconnectJob = scope.launch {
+            delay(3000)
+            while (!manualDisconnect) {
+
+                try {
+
+                    log("Reconnect attempt...")
+
+                    withTimeout(15000) {
+                        device.peripheral.connect()
+                    }
+
+                    log("Reconnect success")
+
+                    _uiState.update {
+                        it.copy(connectionState = "Connected")
+                    }
+
+                    break
+
+                } catch (e: Exception) {
+
+                    logError("Reconnect failed", e)
+                }
+
+                delay(5000)
+            }
+        }
+    }
+
+    fun disconnect() {
+        manualDisconnect = true
+        reconnectJob?.cancel()
+        connectionJob?.cancel()
         scope.launch {
 
             try {
@@ -190,11 +265,11 @@ class BleManager {
         scope.cancel()
     }
 
-    private fun log(message: String) {
+    fun log(message: String) {
         Log.d("BleManager", message)
     }
 
-    private fun logError(message: String, throwable: Throwable) {
+    fun logError(message: String, throwable: Throwable) {
         Log.e("BleManager", message, throwable)
     }
 }
