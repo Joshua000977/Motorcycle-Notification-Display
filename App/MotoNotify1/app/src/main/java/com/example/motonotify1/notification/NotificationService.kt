@@ -2,7 +2,7 @@ package com.example.motonotify1.notification
 
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
-import com.example.motonotify1.BleManagerProvider
+import com.example.motonotify1.BleManager.BleManagerProvider
 
 class NotificationService : NotificationListenerService(){
 
@@ -21,7 +21,7 @@ class NotificationService : NotificationListenerService(){
         val title = extras.getString("android.title") ?:return
         val text = extras.getCharSequence("android.text")?.toString() ?: return
 
-        val message = "WA: $title: $text"
+        val message = "WA:$title:$text"
 
 
         val now = System.currentTimeMillis()

@@ -37,6 +37,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.example.motonotify1.BleManager.BleManagerProvider
 import com.example.motonotify1.ui.theme.MotoNotify1Theme
 
 class MainActivity : ComponentActivity() {
@@ -64,7 +65,9 @@ private fun BleTestScreen(modifier: Modifier = Modifier) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             arrayOf(
                 Manifest.permission.BLUETOOTH_SCAN,
-                Manifest.permission.BLUETOOTH_CONNECT
+                Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.READ_PHONE_STATE,
+                Manifest.permission.READ_CONTACTS
             )
         } else {
             arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
@@ -103,9 +106,27 @@ private fun BleTestScreen(modifier: Modifier = Modifier) {
 
         Button(
             onClick = {
+                permissions.forEach {
+
+                    bleManager.log(
+                        "$it = ${
+                            ContextCompat.checkSelfPermission(
+                                context,
+                                it
+                            ) == PackageManager.PERMISSION_GRANTED
+                        }"
+                    )
+                }
                 if (hasAllPermissions()) {
+
+                    bleManager.log("All permissions granted")
+
                     bleManager.startScan()
+
                 } else {
+
+                    bleManager.log("Requesting permissions")
+
                     permissionLauncher.launch(permissions)
                 }
             }

@@ -1,4 +1,4 @@
-package com.example.motonotify1
+package com.example.motonotify1.BleManager
 
 import android.util.Log
 import com.juul.kable.Peripheral
@@ -13,10 +13,10 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import com.juul.kable.peripheral
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeout
 
@@ -170,7 +170,7 @@ class BleManager {
 
             } catch (e: Exception) {
 
-                if (e is kotlinx.coroutines.CancellationException) {
+                if (e is CancellationException) {
                     return@launch
                 }
 

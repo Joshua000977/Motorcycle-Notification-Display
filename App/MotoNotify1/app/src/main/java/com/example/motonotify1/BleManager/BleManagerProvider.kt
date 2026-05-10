@@ -1,4 +1,4 @@
-package com.example.motonotify1
+package com.example.motonotify1.BleManager
 
 object BleManagerProvider {
 
