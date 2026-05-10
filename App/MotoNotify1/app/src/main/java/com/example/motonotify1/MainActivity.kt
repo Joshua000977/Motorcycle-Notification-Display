@@ -54,7 +54,9 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun BleTestScreen(modifier: Modifier = Modifier) {
     val context = LocalContext.current
-    val bleManager = remember { BleManager() }
+    val bleManager = remember {
+        BleManagerProvider.bleManager
+    }
     val uiState by bleManager.uiState.collectAsState()
     var textToSend by remember { mutableStateOf("") }
 

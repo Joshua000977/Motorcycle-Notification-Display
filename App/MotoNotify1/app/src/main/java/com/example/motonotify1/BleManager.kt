@@ -275,7 +275,6 @@ class BleManager {
             )
         }
     }
-
     fun logError(message: String, throwable: Throwable) {
 
         Log.e("BleManager", message, throwable)
