@@ -1,12 +1,12 @@
-package com.example.motonotify1.call
+package com.example.motonotify1.service.call
 
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.telephony.TelephonyManager
-import com.example.motonotify1.BleManager.BleManagerProvider
 import android.net.Uri
 import android.provider.ContactsContract
+import android.telephony.TelephonyManager
+import com.example.motonotify1.BleManager.BleManagerProvider
 
 class CallStateReceiver : BroadcastReceiver() {
     private var lastCallMessage = ""
@@ -37,7 +37,8 @@ class CallStateReceiver : BroadcastReceiver() {
     }
 
     private fun getContactName(context: Context, phoneNumber: String):String?{
-        val uri = Uri.withAppendedPath(ContactsContract.PhoneLookup.CONTENT_FILTER_URI,
+        val uri = Uri.withAppendedPath(
+            ContactsContract.PhoneLookup.CONTENT_FILTER_URI,
             Uri.encode(phoneNumber))
 
         val cursor = context.contentResolver.query(uri, arrayOf(

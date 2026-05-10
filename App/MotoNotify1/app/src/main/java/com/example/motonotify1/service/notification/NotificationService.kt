@@ -1,4 +1,4 @@
-package com.example.motonotify1.notification
+package com.example.motonotify1.service.notification
 
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification

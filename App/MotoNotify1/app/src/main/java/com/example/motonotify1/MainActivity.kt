@@ -39,6 +39,10 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.motonotify1.BleManager.BleManagerProvider
 import com.example.motonotify1.ui.theme.MotoNotify1Theme
+import android.content.Intent
+import android.util.Log
+import androidx.core.content.ContextCompat.startForegroundService
+import com.example.motonotify1.service.foregroundService.MotoForegroundService
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -76,7 +80,10 @@ private fun BleTestScreen(modifier: Modifier = Modifier) {
 
     fun hasAllPermissions(): Boolean =
         permissions.all { permission ->
-            ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
+            ContextCompat.checkSelfPermission(
+                context,
+                permission
+            ) == PackageManager.PERMISSION_GRANTED
         }
 
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -88,9 +95,23 @@ private fun BleTestScreen(modifier: Modifier = Modifier) {
     }
 
     DisposableEffect(Unit) {
-        bleManager.startScan()
+        if (hasAllPermissions()) {
+
+            val serviceIntent = Intent(
+                context,
+                MotoForegroundService::class.java
+            )
+            ContextCompat.startForegroundService(
+                context,
+                serviceIntent
+            )
+
+        } else {
+
+            permissionLauncher.launch(permissions)
+        }
         onDispose {
-            bleManager.close()
+
         }
     }
 
