@@ -29,9 +29,9 @@ data class BleDeviceUi(
 data class BleUiState(
     val isScanning: Boolean = false,
     val connectionState: String = "Disconnected",
-    val devices: List<BleDeviceUi> = emptyList()
+    val devices: List<BleDeviceUi> = emptyList(),
+    val logs: List<String> = emptyList()
 )
-
 class BleManager {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -266,10 +266,27 @@ class BleManager {
     }
 
     fun log(message: String) {
+
         Log.d("BleManager", message)
+
+        _uiState.update {
+            it.copy(
+                logs = (it.logs + message).takeLast(40)
+            )
+        }
     }
 
     fun logError(message: String, throwable: Throwable) {
+
         Log.e("BleManager", message, throwable)
+
+        _uiState.update {
+            it.copy(
+                logs = (
+                        it.logs +
+                                "$message: ${throwable.message}"
+                        ).takeLast(40)
+            )
+        }
     }
 }

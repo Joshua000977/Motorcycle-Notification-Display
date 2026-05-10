@@ -114,7 +114,7 @@ private fun BleTestScreen(modifier: Modifier = Modifier) {
         LazyColumn(
             modifier = Modifier
                 .fillMaxWidth()
-                .weight(1f, fill = true),
+                .weight(0.5f, fill = true),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             items(uiState.devices, key = { it.address }) { device ->
@@ -150,6 +150,26 @@ private fun BleTestScreen(modifier: Modifier = Modifier) {
                 modifier = Modifier.padding(start = 8.dp)
             ) {
                 Text("Send")
+            }
+        }
+        Text(
+            text = "Logs",
+            style = MaterialTheme.typography.titleMedium
+        )
+
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(0.5f),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+
+            items(uiState.logs.reversed()) { log ->
+
+                Text(
+                    text = log,
+                    style = MaterialTheme.typography.bodySmall
+                )
             }
         }
     }
