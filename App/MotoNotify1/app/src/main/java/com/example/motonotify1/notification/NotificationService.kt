@@ -6,8 +6,12 @@ import com.example.motonotify1.BleManagerProvider
 
 class NotificationService : NotificationListenerService(){
 
+    private var lastMessage = ""
+    private var lastMessageTime = 0L
     override fun onNotificationPosted(sbn: StatusBarNotification?) {
         val packageName = sbn?.packageName
+
+
 
         if(packageName != "com.whatsapp"){
             return;
@@ -19,7 +23,15 @@ class NotificationService : NotificationListenerService(){
 
         val message = "WA: $title: $text"
 
-        BleManagerProvider.bleManager.log(message);
+
+        val now = System.currentTimeMillis()
+        if(message == lastMessage && now-lastMessageTime < 3000){
+            return
+        }
+        lastMessage = message
+        lastMessageTime = now
+        BleManagerProvider.bleManager.log(message)
         BleManagerProvider.bleManager.sendText(message)
+
     }
 }
