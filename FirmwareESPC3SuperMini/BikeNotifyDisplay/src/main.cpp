@@ -1,9 +1,12 @@
 #include <Arduino.h>
 #include <NimBLEDevice.h>
+#include <TFT_eSPI.h>
 
 #define DEVICE_NAME "MotoNotifyDisplay"
 #define SERVICE_UUID "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
 #define CHARACTERISTIC_UUID "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
+
+TFT_eSPI tft = TFT_eSPI();
 
 NimBLEServer *bleServer = nullptr;
 NimBLECharacteristic *rxCharacteristic = nullptr;
@@ -53,15 +56,22 @@ class NotificationCallbacks : public NimBLECharacteristicCallbacks
 
 void handleNotification(const String &message)
 {
-    if (message.startsWith("CALL:"))
+    tft.fillScreen(TFT_BLACK);
+
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setTextDatum(MC_DATUM);
+
+    if (message.startsWith("C:"))
     {
-        String callInfo = message.substring(5);
+        String callInfo = message.substring(2);
         callInfo.trim();
 
         Serial.print("Incoming call: ");
         Serial.println(callInfo);
 
-        // Later: show on display
+        tft.setTextColor(TFT_RED, TFT_BLACK);
+
+        tft.drawString(callInfo, 1, 1, 5);
     }
     else if (message.startsWith("WA:"))
     {
@@ -71,14 +81,20 @@ void handleNotification(const String &message)
         Serial.print("WhatsApp: ");
         Serial.println(whatsappInfo);
 
-        // Later: show on display
+        tft.setTextColor(TFT_GREEN, TFT_BLACK);
+
+        tft.drawString("WhatsApp", 120, 70, 4);
+
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+
+        tft.drawString(whatsappInfo, 120, 130, 2);
     }
     else
     {
         Serial.print("Notification: ");
         Serial.println(message);
 
-        // Later: show on display
+        tft.drawString(message, 120, 120, 2);
     }
 }
 
@@ -120,8 +136,20 @@ void setupBLE()
 
 void setup()
 {
+
     Serial.begin(115200);
-    delay(5000);
+    delay(1000);
+
+    tft.init();
+    tft.setRotation(0);
+
+    tft.fillScreen(TFT_BLACK);
+
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setTextDatum(MC_DATUM);
+
+    tft.drawString("MotoNotify", 120, 100, 4);
+    tft.drawString("Starting...", 120, 140, 2);
 
     Serial.println();
     Serial.println("Moto Notification Display starting...");
@@ -135,15 +163,24 @@ void loop()
 
     if (millis() - lastStatusPrint >= 5000)
     {
+        tft.fillScreen(TFT_BLACK);
         lastStatusPrint = millis();
 
         if (deviceConnected)
         {
             Serial.println("Status: phone connected");
+            tft.setTextColor(TFT_WHITE, TFT_BLACK);
+            tft.setTextDatum(MC_DATUM);
+
+            tft.drawString("Connected!", 120, 100, 4);
         }
         else
         {
             Serial.println("Status: waiting for phone...");
+            tft.setTextColor(TFT_WHITE, TFT_BLACK);
+            tft.setTextDatum(MC_DATUM);
+
+            tft.drawString("Not Connected!", 120, 100, 4);
         }
     }
 }
