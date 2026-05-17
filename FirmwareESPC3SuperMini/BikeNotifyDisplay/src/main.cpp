@@ -20,6 +20,8 @@ int scrollX = 0;
 int textWidth = 0;
 
 unsigned long lastScrollUpdate = 0;
+int scrollLoops = 0;
+uint16_t currentTextColor = TFT_WHITE;
 
 bool deviceConnected = false;
 void handleNotification(const String &message);
@@ -70,9 +72,11 @@ void showScrollingOrCenteredText(const String &text, uint16_t color)
 
     tft.fillScreen(TFT_BLACK);
 
-    tft.setTextColor(color, TFT_BLACK);
+    currentTextColor = color;
+    tft.setTextColor(currentTextColor, TFT_BLACK);
+    tft.setTextSize(2);
 
-    textWidth = tft.textWidth(text, 4) * 2;
+    textWidth = tft.textWidth(text, 4);
 
     if (textWidth <= 220)
     {
@@ -86,7 +90,8 @@ void showScrollingOrCenteredText(const String &text, uint16_t color)
         scrollingText = true;
 
         currentText = text;
-        scrollX = 240;
+        scrollX = 10;
+        scrollLoops = 0;
 
         tft.setTextDatum(TL_DATUM);
     }
@@ -242,14 +247,16 @@ void loop()
 
     if (scrollingText)
     {
-        if (millis() - lastScrollUpdate > 25)
+        if (millis() - lastScrollUpdate > 50)
         {
             lastScrollUpdate = millis();
 
             tft.fillRect(0, 80, 240, 80, TFT_BLACK);
 
-            tft.setTextColor(TFT_WHITE, TFT_BLACK);
+            tft.setTextColor(currentTextColor, TFT_BLACK);
+
             tft.setTextDatum(TL_DATUM);
+
             tft.setTextSize(2);
 
             tft.drawString(currentText, scrollX, 100, 4);
@@ -258,7 +265,18 @@ void loop()
 
             if (scrollX < -textWidth)
             {
-                scrollX = 240;
+                scrollLoops++;
+
+                if (scrollLoops >= 2)
+                {
+                    scrollingText = false;
+                    showingNotification = false; 
+                    drawIdleScreen();
+                }
+                else
+                {
+                    scrollX = 10;
+                }
             }
         }
     }
