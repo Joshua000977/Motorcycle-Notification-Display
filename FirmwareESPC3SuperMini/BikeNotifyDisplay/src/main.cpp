@@ -11,8 +11,12 @@ TFT_eSPI tft = TFT_eSPI();
 NimBLEServer *bleServer = nullptr;
 NimBLECharacteristic *rxCharacteristic = nullptr;
 
+unsigned long lastNotificationTime = 0;
+bool showingNotification = false;
+
 bool deviceConnected = false;
 void handleNotification(const String &message);
+void drawIdleScreen();
 
 class ServerCallbacks : public NimBLEServerCallbacks
 {
@@ -54,13 +58,33 @@ class NotificationCallbacks : public NimBLECharacteristicCallbacks
     }
 };
 
-void handleNotification(const String &message)
+void drawIdleScreen()
 {
     tft.fillScreen(TFT_BLACK);
 
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
     tft.setTextDatum(MC_DATUM);
+    tft.setTextSize(1);
 
+    if (deviceConnected)
+    {
+        tft.drawString("Connected", 120, 120, 4);
+    }
+    else
+    {
+        tft.drawString("Not Connected", 120, 120, 4);
+    }
+}
+
+void handleNotification(const String &message)
+{
+    showingNotification = true;
+    lastNotificationTime = millis();
+    tft.fillScreen(TFT_BLACK);
+
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setTextDatum(MC_DATUM);
+    tft.setTextSize(2);
     if (message.startsWith("C:"))
     {
         String callInfo = message.substring(2);
@@ -70,8 +94,8 @@ void handleNotification(const String &message)
         Serial.println(callInfo);
 
         tft.setTextColor(TFT_RED, TFT_BLACK);
-
-        tft.drawString(callInfo, 1, 1, 5);
+        
+        tft.drawString(callInfo, 120, 120, 4);
     }
     else if (message.startsWith("WA:"))
     {
@@ -83,18 +107,14 @@ void handleNotification(const String &message)
 
         tft.setTextColor(TFT_GREEN, TFT_BLACK);
 
-        tft.drawString("WhatsApp", 120, 70, 4);
-
-        tft.setTextColor(TFT_WHITE, TFT_BLACK);
-
-        tft.drawString(whatsappInfo, 120, 130, 2);
+        tft.drawString(whatsappInfo, 120, 130, 4);
     }
     else
     {
         Serial.print("Notification: ");
         Serial.println(message);
 
-        tft.drawString(message, 120, 120, 2);
+        tft.drawString(message, 120, 120, 4);
     }
 }
 
@@ -155,32 +175,24 @@ void setup()
     Serial.println("Moto Notification Display starting...");
 
     setupBLE();
+    drawIdleScreen();
 }
 
 void loop()
 {
-    static unsigned long lastStatusPrint = 0;
+    static bool lastConnectionState = false;
 
-    if (millis() - lastStatusPrint >= 5000)
+    // Return to idle screen after 10 seconds
+    if (showingNotification && millis() - lastNotificationTime > 10000)
     {
-        tft.fillScreen(TFT_BLACK);
-        lastStatusPrint = millis();
+        showingNotification = false;
+        drawIdleScreen();
+    }
 
-        if (deviceConnected)
-        {
-            Serial.println("Status: phone connected");
-            tft.setTextColor(TFT_WHITE, TFT_BLACK);
-            tft.setTextDatum(MC_DATUM);
-
-            tft.drawString("Connected!", 120, 100, 4);
-        }
-        else
-        {
-            Serial.println("Status: waiting for phone...");
-            tft.setTextColor(TFT_WHITE, TFT_BLACK);
-            tft.setTextDatum(MC_DATUM);
-
-            tft.drawString("Not Connected!", 120, 100, 4);
-        }
+    // Update idle screen when connection state changes
+    if (!showingNotification && lastConnectionState != deviceConnected)
+    {
+        lastConnectionState = deviceConnected;
+        drawIdleScreen();
     }
 }
