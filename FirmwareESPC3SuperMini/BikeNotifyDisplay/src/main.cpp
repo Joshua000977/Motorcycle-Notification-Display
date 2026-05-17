@@ -13,11 +13,18 @@ NimBLECharacteristic *rxCharacteristic = nullptr;
 
 unsigned long lastNotificationTime = 0;
 bool showingNotification = false;
+String currentText = "";
+bool scrollingText = false;
+
+int scrollX = 0;
+int textWidth = 0;
+
+unsigned long lastScrollUpdate = 0;
 
 bool deviceConnected = false;
 void handleNotification(const String &message);
 void drawIdleScreen();
-
+void showScrollingOrCenteredText(const String &text, uint16_t color);
 class ServerCallbacks : public NimBLEServerCallbacks
 {
     void onConnect(NimBLEServer *server, NimBLEConnInfo &connInfo) override
@@ -58,6 +65,33 @@ class NotificationCallbacks : public NimBLECharacteristicCallbacks
     }
 };
 
+void showScrollingOrCenteredText(const String &text, uint16_t color)
+{
+
+    tft.fillScreen(TFT_BLACK);
+
+    tft.setTextColor(color, TFT_BLACK);
+
+    textWidth = tft.textWidth(text, 4) * 2;
+
+    if (textWidth <= 220)
+    {
+        scrollingText = false;
+
+        tft.setTextDatum(MC_DATUM);
+        tft.drawString(text, 120, 120, 4);
+    }
+    else
+    {
+        scrollingText = true;
+
+        currentText = text;
+        scrollX = 240;
+
+        tft.setTextDatum(TL_DATUM);
+    }
+}
+
 void drawIdleScreen()
 {
     tft.fillScreen(TFT_BLACK);
@@ -93,21 +127,31 @@ void handleNotification(const String &message)
         Serial.print("Incoming call: ");
         Serial.println(callInfo);
 
-        tft.setTextColor(TFT_RED, TFT_BLACK);
-        
-        tft.drawString(callInfo, 120, 120, 4);
+        showScrollingOrCenteredText(callInfo, TFT_RED);
     }
     else if (message.startsWith("WA:"))
     {
         String whatsappInfo = message.substring(3);
         whatsappInfo.trim();
 
-        Serial.print("WhatsApp: ");
-        Serial.println(whatsappInfo);
+        int separator = whatsappInfo.indexOf(':');
 
-        tft.setTextColor(TFT_GREEN, TFT_BLACK);
+        String sender;
 
-        tft.drawString(whatsappInfo, 120, 130, 4);
+        if (separator != -1)
+        {
+            sender = whatsappInfo.substring(0, separator);
+            sender.trim();
+        }
+        else
+        {
+            sender = whatsappInfo;
+        }
+
+        Serial.print("WhatsApp Sender: ");
+        Serial.println(sender);
+
+        showScrollingOrCenteredText(sender, TFT_GREEN);
     }
     else
     {
@@ -194,5 +238,28 @@ void loop()
     {
         lastConnectionState = deviceConnected;
         drawIdleScreen();
+    }
+
+    if (scrollingText)
+    {
+        if (millis() - lastScrollUpdate > 25)
+        {
+            lastScrollUpdate = millis();
+
+            tft.fillRect(0, 80, 240, 80, TFT_BLACK);
+
+            tft.setTextColor(TFT_WHITE, TFT_BLACK);
+            tft.setTextDatum(TL_DATUM);
+            tft.setTextSize(2);
+
+            tft.drawString(currentText, scrollX, 100, 4);
+
+            scrollX--;
+
+            if (scrollX < -textWidth)
+            {
+                scrollX = 240;
+            }
+        }
     }
 }
