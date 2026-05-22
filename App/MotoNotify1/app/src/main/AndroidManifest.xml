@@ -50,6 +50,10 @@
             android:name=".service.foregroundService.MotoForegroundService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+        <service
+            android:name=".BleManager.ForegroundBleService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
         <receiver
             android:name=".service.call.CallStateReceiver"
             android:exported="true">

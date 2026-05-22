@@ -19,7 +19,6 @@ import com.juul.kable.peripheral
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeout
-import com.example.motonotify1.service.foregroundService.MotoForegroundService
 
 data class BleDeviceUi(
     val name: String,
@@ -153,7 +152,7 @@ class BleManager {
                 }
 
                 log("Connected")
-                MotoForegroundService.instance
+                ForegroundBleService.instance
                     ?.updateNotification("Connected")
 
                 device.peripheral.state.collect { state ->
@@ -161,6 +160,8 @@ class BleManager {
                     when (state) {
 
                         is State.Connected -> {
+                            reconnectJob?.cancel()
+                            reconnectJob = null
 
                             _uiState.update {
                                 it.copy(connectionState = "Connected")
@@ -170,7 +171,7 @@ class BleManager {
                         is State.Disconnected -> {
 
                             log("Disconnected")
-                            MotoForegroundService.instance
+                            ForegroundBleService.instance
                                 ?.updateNotification("Disconnected")
 
                             _uiState.update {
@@ -179,9 +180,9 @@ class BleManager {
                             connectionJob = null
                             peripheral = null
                             if (!manualDisconnect) {
-                                startScan()
-
+                                startReconnectLoop()
                             }
+                            return@collect
                         }
 
                         else -> {}
@@ -196,8 +197,12 @@ class BleManager {
 
                 logError("Connection failed", e)
                 connectionJob = null
+                peripheral = null
                 _uiState.update {
                     it.copy(connectionState = "Disconnected")
+                }
+                if (!manualDisconnect) {
+                    startReconnectLoop()
                 }
             }
         }
@@ -209,27 +214,41 @@ class BleManager {
             return
         }
 
-        val device = lastKnownDevice ?: return
+        val known = lastKnownDevice ?: return
+
+        if (scanJob?.isActive != true) {
+            startScan()
+        }
 
         reconnectJob = scope.launch {
             delay(3000)
             while (!manualDisconnect) {
 
+                if (connectionJob?.isActive == true) {
+                    delay(2000)
+                    continue
+                }
+
                 try {
 
                     log("Reconnect attempt...")
-                    MotoForegroundService.instance
+                    ForegroundBleService.instance
                         ?.updateNotification("Reconnecting...")
 
-                    connect(device)
+                    // FIX: Changed Peripheral(known.address) to scope.peripheral(known.address)
+                    val freshDevice = BleDeviceUi(
+                        name = known.name,
+                        address = known.address,
+                        peripheral = scope.peripheral(known.address)
+                    )
+                    lastKnownDevice = freshDevice
+                    connect(freshDevice)
 
-                    log("Reconnect success")
-
-                    _uiState.update {
-                        it.copy(connectionState = "Connected")
+                    delay(20000)
+                    if (_uiState.value.connectionState == "Connected") {
+                        log("Reconnect success")
+                        break
                     }
-
-                    break
 
                 } catch (e: Exception) {
 
@@ -242,9 +261,9 @@ class BleManager {
 
                 delay(5000)
             }
+            reconnectJob = null
         }
     }
-
     fun disconnect() {
         manualDisconnect = true
         reconnectJob?.cancel()

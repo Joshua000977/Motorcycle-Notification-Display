@@ -6,10 +6,7 @@ plugins {
 
 android {
     namespace = "com.example.motonotify1"
-    compileSdk {
-        version = release(36)
-    }
-
+    compileSdk = 36
     defaultConfig {
         applicationId = "com.example.motonotify1"
         minSdk = 24

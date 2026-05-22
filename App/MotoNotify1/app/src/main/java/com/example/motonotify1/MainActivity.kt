@@ -42,7 +42,7 @@ import com.example.motonotify1.ui.theme.MotoNotify1Theme
 import android.content.Intent
 import android.util.Log
 import androidx.core.content.ContextCompat.startForegroundService
-import com.example.motonotify1.service.foregroundService.MotoForegroundService
+import com.example.motonotify1.BleManager.ForegroundBleService
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -99,7 +99,7 @@ private fun BleTestScreen(modifier: Modifier = Modifier) {
 
             val serviceIntent = Intent(
                 context,
-                MotoForegroundService::class.java
+                ForegroundBleService::class.java
             )
             ContextCompat.startForegroundService(
                 context,
