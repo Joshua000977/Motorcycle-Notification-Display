@@ -1,6 +1,10 @@
 #include <Arduino.h>
 #include <NimBLEDevice.h>
 #include <TFT_eSPI.h>
+#include <WiFi.h>
+#include <ArduinoOTA.h>
+#include <Preferences.h>
+Preferences prefs;
 
 #define DEVICE_NAME "MotoNotifyDisplay"
 #define SERVICE_UUID "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
@@ -10,6 +14,15 @@ TFT_eSPI tft = TFT_eSPI();
 
 NimBLEServer *bleServer = nullptr;
 NimBLECharacteristic *rxCharacteristic = nullptr;
+
+// OTA
+String wifiSSID = "";
+String wifiPassword = "";
+
+bool wifiConnected = false;
+
+void connectToWiFi();
+void setupOTA();
 
 unsigned long lastNotificationTime = 0;
 bool showingNotification = false;
@@ -59,13 +72,131 @@ class NotificationCallbacks : public NimBLECharacteristicCallbacks
         String message = String(value.c_str());
 
         Serial.println();
-        Serial.println("----- New Notification -----");
+        Serial.println("----- Received Message -----");
         Serial.println(message);
         Serial.println("----------------------------");
 
+        // WIFI:SSID:PASSWORD
+        if (message.startsWith("SSID:"))
+        {
+            wifiSSID = message.substring(5);
+
+            prefs.begin("wifi", false);
+            prefs.putString("ssid", wifiSSID);
+            prefs.end();
+        }
+
+        else if (message.startsWith("P:"))
+        {
+            wifiPassword = message.substring(2);
+
+            prefs.begin("wifi", false);
+            prefs.putString("password", wifiPassword);
+            prefs.end();
+        }
+
+        else if (message == "WIFI_CONNECT")
+        {
+            connectToWiFi();
+            return;
+        }
+
+        // OTA_START
+        if (message == "OTA_START")
+        {
+            Serial.println("Starting OTA mode...");
+
+            connectToWiFi();
+
+            return;
+        }
+
+        // Normal notifications
         handleNotification(message);
     }
 };
+
+void connectToWiFi()
+{
+    prefs.begin("wifi", true);
+
+    wifiSSID = prefs.getString("ssid", "");
+    wifiPassword = prefs.getString("password", "");
+
+    prefs.end();
+
+    if (wifiSSID.isEmpty())
+    {
+        Serial.println("No WiFi credentials saved");
+        return;
+    }
+
+    Serial.println("Connecting to WiFi...");
+    Serial.print("SSID: ");
+    Serial.println(wifiSSID);
+
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
+
+    int timeout = 0;
+
+    while (WiFi.status() != WL_CONNECTED && timeout < 20)
+    {
+        delay(500);
+        Serial.print(".");
+
+        timeout++;
+    }
+
+    Serial.println();
+
+    if (WiFi.status() == WL_CONNECTED)
+    {
+        wifiConnected = true;
+
+        Serial.println("WiFi connected");
+        Serial.print("IP: ");
+        Serial.println(WiFi.localIP());
+        String ip = WiFi.localIP().toString();
+
+        String response = "IP:" + ip;
+
+        rxCharacteristic->setValue(response.c_str());
+        rxCharacteristic->notify();
+
+        Serial.println(response);
+
+        setupOTA();
+    }
+    else
+    {
+        wifiConnected = false;
+
+        Serial.println("WiFi connection failed");
+    }
+}
+
+void setupOTA()
+{
+    ArduinoOTA.setHostname("MotoNotify");
+
+    ArduinoOTA.onStart([]()
+                       { Serial.println("OTA Start"); });
+
+    ArduinoOTA.onEnd([]()
+                     { Serial.println("\nOTA Finished"); });
+
+    ArduinoOTA.onProgress([](unsigned int progress, unsigned int total)
+                          { Serial.printf("OTA Progress: %u%%\r", (progress * 100) / total); });
+
+    ArduinoOTA.onError([](ota_error_t error)
+                       { Serial.printf("OTA Error[%u]\n", error); });
+
+    ArduinoOTA.begin();
+
+    Serial.println("OTA Ready");
+    Serial.println("Hostname: MotoNotify.local");
+}
 
 void showScrollingOrCenteredText(const String &text, uint16_t color)
 {
@@ -183,8 +314,8 @@ void setupBLE()
         CHARACTERISTIC_UUID,
         NIMBLE_PROPERTY::READ |
             NIMBLE_PROPERTY::WRITE |
-            NIMBLE_PROPERTY::WRITE_NR);
-
+            NIMBLE_PROPERTY::WRITE_NR |
+            NIMBLE_PROPERTY::NOTIFY);
     rxCharacteristic->setCallbacks(new NotificationCallbacks());
 
     service->start();
@@ -224,6 +355,7 @@ void setup()
     Serial.println("Moto Notification Display starting...");
 
     setupBLE();
+    connectToWiFi();
     drawIdleScreen();
 }
 
@@ -270,7 +402,7 @@ void loop()
                 if (scrollLoops >= 2)
                 {
                     scrollingText = false;
-                    showingNotification = false; 
+                    showingNotification = false;
                     drawIdleScreen();
                 }
                 else
@@ -279,5 +411,9 @@ void loop()
                 }
             }
         }
+    }
+    if (wifiConnected)
+    {
+        ArduinoOTA.handle();
     }
 }
