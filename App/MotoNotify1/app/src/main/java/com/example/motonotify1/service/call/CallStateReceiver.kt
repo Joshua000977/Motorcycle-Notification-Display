@@ -6,7 +6,7 @@ import android.content.Intent
 import android.net.Uri
 import android.provider.ContactsContract
 import android.telephony.TelephonyManager
-import com.example.motonotify1.BleManager.BleManagerProvider
+import com.example.motonotify1.bleManager.BleManagerProvider
 
 class CallStateReceiver : BroadcastReceiver() {
     private var lastCallMessage = ""

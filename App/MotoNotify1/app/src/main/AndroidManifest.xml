@@ -47,11 +47,12 @@
 
         </service>
         <service
-            android:name=".service.foregroundService.MotoForegroundService"
+            android:name=".service.foregroundService.ForegroundBleService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+        <!-- Legacy entry point: forwards to ForegroundBleService -->
         <service
-            android:name=".BleManager.ForegroundBleService"
+            android:name=".service.foregroundService.MotoForegroundService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
         <receiver

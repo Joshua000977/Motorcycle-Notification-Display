@@ -2,7 +2,7 @@ package com.example.motonotify1.service.notification
 
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
-import com.example.motonotify1.BleManager.BleManagerProvider
+import com.example.motonotify1.bleManager.BleManagerProvider
 
 class NotificationService : NotificationListenerService(){
 

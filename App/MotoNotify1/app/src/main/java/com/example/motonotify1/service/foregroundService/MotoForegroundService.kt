@@ -1,82 +1,36 @@
 package com.example.motonotify1.service.foregroundService
 
-import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
-import android.os.Build
-import android.os.IBinder
-import androidx.core.app.NotificationCompat
-import com.example.motonotify1.BleManager.BleManagerProvider
+import androidx.core.content.ContextCompat
+import com.example.motonotify1.bleManager.BleManagerProvider
 
+/**
+ * Legacy foreground service kept for compatibility.
+ * Delegates BLE ownership to [ForegroundBleService].
+ */
 class MotoForegroundService : Service() {
-    private val channelId = "moto_notify_channel"
-    private val notificationId = 1
-    companion object {
 
-        var instance: MotoForegroundService? = null
-    }
-    override fun onBind(p0: Intent?): IBinder? {
-        return null
-    }
+  override fun onBind(intent: Intent?) = null
 
-    override fun onCreate() {
-        super.onCreate()
-        instance = this
-        startMotoForeground()
-        BleManagerProvider.bleManager.log("Foreground service started")
-        BleManagerProvider.bleManager.startScan()
+  override fun onCreate() {
+    super.onCreate()
+    instance = this
+    BleManagerProvider.bleManager.log("MotoForegroundService: delegating to ForegroundBleService")
+    ContextCompat.startForegroundService(
+      this,
+      Intent(this, ForegroundBleService::class.java)
+    )
+  }
 
+  override fun onDestroy() {
+    instance = null
+    super.onDestroy()
+  }
 
-    }
-
-    private fun startMotoForeground() {
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-
-            val channel = NotificationChannel(
-                channelId,
-                "MotoNotify Service",
-                NotificationManager.IMPORTANCE_DEFAULT
-            )
-
-            val manager =
-                getSystemService(NotificationManager::class.java)
-
-            manager.createNotificationChannel(channel)
-        }
-
-        startForeground(
-            notificationId,
-            buildNotification("Starting...")
-        )
-    }
-
-
-    private fun buildNotification(
-        text: String
-    ): Notification {
-
-        return NotificationCompat.Builder(this, channelId)
-            .setContentTitle("MotoNotify")
-            .setContentText(text)
-            .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
-            .setOngoing(true)
-            .build()
-    }
-    fun updateNotification(
-        text: String
-    ) {
-
-        val manager =
-            getSystemService(
-                NotificationManager::class.java
-            )
-
-        manager.notify(
-            notificationId,
-            buildNotification(text)
-        )
-    }
+  companion object {
+    @Volatile
+    var instance: MotoForegroundService? = null
+      private set
+  }
 }
