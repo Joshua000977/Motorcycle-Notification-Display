@@ -18,6 +18,10 @@ NimBLECharacteristic *rxCharacteristic = nullptr;
 // OTA
 String wifiSSID = "";
 String wifiPassword = "";
+/*for platformio.ini
+upload_protocol = espota
+upload_port = 10.168.122.34
+*/
 
 bool wifiConnected = false;
 
@@ -106,6 +110,22 @@ class NotificationCallbacks : public NimBLECharacteristicCallbacks
         {
             Serial.println("Starting OTA mode...");
 
+            // Stop scrolling/notifications
+            scrollingText = false;
+            showingNotification = false;
+
+            tft.fillScreen(TFT_BLACK);
+            tft.setTextDatum(MC_DATUM);
+            tft.setTextColor(TFT_WHITE, TFT_BLACK);
+
+            tft.drawString("OTA MODE", 120, 90, 4);
+            tft.drawString("Connecting WiFi...", 120, 130, 2);
+
+            // Stop BLE advertising
+            NimBLEDevice::stopAdvertising();
+
+            delay(500);
+
             connectToWiFi();
 
             return;
@@ -135,12 +155,16 @@ void connectToWiFi()
     Serial.print("SSID: ");
     Serial.println(wifiSSID);
 
+    WiFi.disconnect(true);
+    delay(500);
+
     WiFi.mode(WIFI_STA);
+
     WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
 
     int timeout = 0;
 
-    while (WiFi.status() != WL_CONNECTED && timeout < 20)
+    while (WiFi.status() != WL_CONNECTED && timeout < 30)
     {
         delay(500);
         Serial.print(".");
@@ -155,16 +179,23 @@ void connectToWiFi()
         wifiConnected = true;
 
         Serial.println("WiFi connected");
-        Serial.print("IP: ");
-        Serial.println(WiFi.localIP());
+
         String ip = WiFi.localIP().toString();
+
+        Serial.print("IP: ");
+        Serial.println(ip);
+
+        tft.fillScreen(TFT_BLACK);
+
+        tft.drawString("OTA READY", 120, 80, 4);
+        tft.drawString(ip, 120, 120, 2);
+
+        delay(1000);
 
         String response = "IP:" + ip;
 
         rxCharacteristic->setValue(response.c_str());
         rxCharacteristic->notify();
-
-        Serial.println(response);
 
         setupOTA();
     }
@@ -173,6 +204,10 @@ void connectToWiFi()
         wifiConnected = false;
 
         Serial.println("WiFi connection failed");
+
+        tft.fillScreen(TFT_BLACK);
+
+        tft.drawString("F", 120, 120, 2);
     }
 }
 
@@ -181,16 +216,21 @@ void setupOTA()
     ArduinoOTA.setHostname("MotoNotify");
 
     ArduinoOTA.onStart([]()
-                       { Serial.println("OTA Start"); });
+                       {
+                            Serial.println("OTA Start");
+                     
+                        scrollingText = false;
+                        showingNotification = false; });
 
-    ArduinoOTA.onEnd([]()
-                     { Serial.println("\nOTA Finished"); });
+    ArduinoOTA.onEnd([]() {});
 
     ArduinoOTA.onProgress([](unsigned int progress, unsigned int total)
                           { Serial.printf("OTA Progress: %u%%\r", (progress * 100) / total); });
 
     ArduinoOTA.onError([](ota_error_t error)
-                       { Serial.printf("OTA Error[%u]\n", error); });
+                       {
+    String err = "OTA:ERROR:" + String(error);
+        Serial.println(err.c_str()); });
 
     ArduinoOTA.begin();
 
@@ -355,14 +395,18 @@ void setup()
     Serial.println("Moto Notification Display starting...");
 
     setupBLE();
-    connectToWiFi();
     drawIdleScreen();
 }
 
 void loop()
 {
-    static bool lastConnectionState = false;
+    if (wifiConnected)
+    {
 
+        ArduinoOTA.handle();
+    }
+
+    static bool lastConnectionState = false;
     // Return to idle screen after 10 seconds
     if (showingNotification && millis() - lastNotificationTime > 10000)
     {
@@ -371,13 +415,13 @@ void loop()
     }
 
     // Update idle screen when connection state changes
-    if (!showingNotification && lastConnectionState != deviceConnected)
+    if (!showingNotification && lastConnectionState != deviceConnected && !wifiConnected)
     {
         lastConnectionState = deviceConnected;
         drawIdleScreen();
     }
 
-    if (scrollingText)
+    if (scrollingText && !wifiConnected)
     {
         if (millis() - lastScrollUpdate > 50)
         {
@@ -411,9 +455,5 @@ void loop()
                 }
             }
         }
-    }
-    if (wifiConnected)
-    {
-        ArduinoOTA.handle();
     }
 }
