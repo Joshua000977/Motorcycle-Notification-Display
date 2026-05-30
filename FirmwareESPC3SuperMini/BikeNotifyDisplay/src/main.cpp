@@ -350,10 +350,10 @@ void drawIdleScreen()
             : "R: " + String(rearPressure, 1) + " bar";
 
     tft.setTextColor(getPressureColor(frontPressure), TFT_BLACK);
-    tft.drawString(frontText, 120, 80, 4);
+    tft.drawString(frontText, 120, 100, 4);
 
     tft.setTextColor(getPressureColor(rearPressure), TFT_BLACK);
-    tft.drawString(rearText, 120, 140, 4);
+    tft.drawString(rearText, 120, 150, 4);
 
     String phoneBatText =
         (deviceConnected && mobileBatLvl >= 0)
@@ -361,15 +361,16 @@ void drawIdleScreen()
             : "--%";
     tft.setTextSize(1);
     tft.setTextColor(TFT_WHITE);
-    tft.drawString(phoneBatText, 80, 180, 4);
+    tft.drawLine(0, 180, 239, 180, TFT_WHITE);
+    tft.drawString(phoneBatText, 80, 200, 4);
     // Phone connection indicator
     if (deviceConnected)
     {
-        tft.fillCircle(150, 180, 6, TFT_BLUE);
+        tft.fillCircle(150, 200, 6, TFT_BLUE);
     }
     else
     {
-        tft.fillCircle(150, 180, 6, TFT_RED);
+        tft.fillCircle(150, 200, 6, TFT_RED);
     }
 }
 
