@@ -40,10 +40,57 @@ unsigned long lastScrollUpdate = 0;
 int scrollLoops = 0;
 uint16_t currentTextColor = TFT_WHITE;
 
+float frontPressure = 1.9f;
+float rearPressure = 1.5f;
+
+int mobileBatLvl = 50;
+
 bool deviceConnected = false;
 void handleNotification(const String &message);
 void drawIdleScreen();
 void showScrollingOrCenteredText(const String &text, uint16_t color);
+
+enum class PressureState
+{
+    OK,
+    WARNING,
+    CRITICAL
+};
+
+PressureState getPressureState(float pressure)
+{
+    if (pressure <= 0)
+        return PressureState::CRITICAL;
+
+    if (pressure < 1.8f)
+        return PressureState::CRITICAL;
+
+    if (pressure < 2.0f)
+        return PressureState::WARNING;
+
+    if (pressure > 3.2f)
+        return PressureState::CRITICAL;
+
+    if (pressure > 2.9f)
+        return PressureState::WARNING;
+
+    return PressureState::OK;
+}
+
+uint16_t getPressureColor(float pressure)
+{
+    switch (getPressureState(pressure))
+    {
+    case PressureState::CRITICAL:
+        return TFT_RED;
+
+    case PressureState::WARNING:
+        return TFT_YELLOW;
+
+    default:
+        return TFT_WHITE;
+    }
+}
 class ServerCallbacks : public NimBLEServerCallbacks
 {
     void onConnect(NimBLEServer *server, NimBLEConnInfo &connInfo) override
@@ -274,15 +321,36 @@ void drawIdleScreen()
 
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
     tft.setTextDatum(MC_DATUM);
-    tft.setTextSize(1);
+    tft.setTextSize(2);
 
+    String frontText =
+        (frontPressure < 0)
+            ? "F: --.- bar"
+            : "F: " + String(frontPressure, 1) + " bar";
+
+    String rearText =
+        (rearPressure < 0)
+            ? "R: --.- bar"
+            : "R: " + String(rearPressure, 1) + " bar";
+
+    tft.setTextColor(getPressureColor(frontPressure), TFT_BLACK);
+    tft.drawString(frontText, 120, 80, 4);
+
+    tft.setTextColor(getPressureColor(rearPressure), TFT_BLACK);
+    tft.drawString(rearText, 120, 140, 4);
+
+    String phoneBatText = (deviceConnected) ? String(mobileBatLvl) + "%" : "--%";
+    tft.setTextSize(1);
+    tft.setTextColor(TFT_WHITE);
+    tft.drawString(phoneBatText, 80, 180, 4);
+    // Phone connection indicator
     if (deviceConnected)
     {
-        tft.drawString("Connected", 120, 120, 4);
+        tft.fillCircle(150, 180, 6, TFT_BLUE);
     }
     else
     {
-        tft.drawString("Not Connected", 120, 120, 4);
+        tft.fillCircle(150, 180, 6, TFT_RED);
     }
 }
 
