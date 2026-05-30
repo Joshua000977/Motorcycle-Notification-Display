@@ -43,7 +43,7 @@ uint16_t currentTextColor = TFT_WHITE;
 float frontPressure = 1.9f;
 float rearPressure = 1.5f;
 
-int mobileBatLvl = 50;
+int mobileBatLvl = -1;
 
 bool deviceConnected = false;
 void handleNotification(const String &message);
@@ -174,6 +174,22 @@ class NotificationCallbacks : public NimBLECharacteristicCallbacks
             delay(500);
 
             connectToWiFi();
+
+            return;
+        }
+
+        if (message.startsWith("BAT:"))
+        {
+            mobileBatLvl = message.substring(4).toInt();
+
+            Serial.print("Phone battery: ");
+            Serial.print(mobileBatLvl);
+            Serial.println("%");
+
+            if (!showingNotification && !scrollingText && !wifiConnected)
+            {
+                drawIdleScreen();
+            }
 
             return;
         }
@@ -339,7 +355,10 @@ void drawIdleScreen()
     tft.setTextColor(getPressureColor(rearPressure), TFT_BLACK);
     tft.drawString(rearText, 120, 140, 4);
 
-    String phoneBatText = (deviceConnected) ? String(mobileBatLvl) + "%" : "--%";
+    String phoneBatText =
+        (deviceConnected && mobileBatLvl >= 0)
+            ? String(mobileBatLvl) + "%"
+            : "--%";
     tft.setTextSize(1);
     tft.setTextColor(TFT_WHITE);
     tft.drawString(phoneBatText, 80, 180, 4);
