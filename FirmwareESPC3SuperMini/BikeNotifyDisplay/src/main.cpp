@@ -337,6 +337,7 @@ void drawIdleScreen()
 
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
     tft.setTextDatum(MC_DATUM);
+    tft.drawLine(0, 60, 239, 60, TFT_WHITE);
     tft.setTextSize(2);
 
     String frontText =
