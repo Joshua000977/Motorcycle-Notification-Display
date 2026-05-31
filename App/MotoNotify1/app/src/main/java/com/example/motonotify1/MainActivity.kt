@@ -43,6 +43,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.motonotify1.bleManager.BleManagerProvider
+import com.example.motonotify1.bleManager.TpmsBleManagerProvider
+import com.example.motonotify1.bleManager.TpmsReadStatus
+import com.example.motonotify1.bleManager.TpmsUiState
 import com.example.motonotify1.ui.theme.MotoNotify1Theme
 import android.content.Intent
 import com.example.motonotify1.service.foregroundService.ForegroundBleService
@@ -65,7 +68,11 @@ private fun BleTestScreen(modifier: Modifier = Modifier) {
     val bleManager = remember {
         BleManagerProvider.bleManager
     }
+    val tpmsBleManager = remember {
+        TpmsBleManagerProvider.tpmsBleManager
+    }
     val uiState by bleManager.uiState.collectAsState()
+    val tpmsState by tpmsBleManager.uiState.collectAsState()
     var textToSend by remember { mutableStateOf("") }
 
         val permissions = remember {
@@ -139,6 +146,9 @@ private fun BleTestScreen(modifier: Modifier = Modifier) {
             text = "WiFi: ${uiState.wifiStatus}",
             style = MaterialTheme.typography.bodyMedium
         )
+
+        TpmsStatusCard(tpmsState = tpmsState)
+
         val isConnected = uiState.phase == BleConnectionPhase.Connected
         val otaWaiting = uiState.otaPreparePhase == OtaPreparePhase.Waiting
         val notificationsBlocked = uiState.otaModeActive
@@ -328,6 +338,80 @@ private fun BleTestScreen(modifier: Modifier = Modifier) {
                     style = MaterialTheme.typography.bodySmall
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun TpmsStatusCard(tpmsState: TpmsUiState) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+            contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                text = "TPMS (RiDEET Pro)",
+                style = MaterialTheme.typography.titleMedium
+            )
+            Text(
+                text = "Cycle: ${tpmsState.cycleStatus}",
+                style = MaterialTheme.typography.bodySmall
+            )
+            Text(
+                text = "Last update: ${tpmsState.lastUpdateTimeText}",
+                style = MaterialTheme.typography.bodySmall
+            )
+            Text(
+                text = "BT: ${if (tpmsState.bluetoothAvailable) "On" else "Off"} | " +
+                    "Permissions: ${if (tpmsState.permissionsGranted) "OK" else "Missing"}",
+                style = MaterialTheme.typography.bodySmall
+            )
+            TpmsSensorRow(
+                label = "Front",
+                pressureBar = tpmsState.front.pressureBar,
+                temperatureC = tpmsState.front.temperatureC,
+                status = tpmsState.front.status,
+                error = tpmsState.front.lastError
+            )
+            TpmsSensorRow(
+                label = "Rear",
+                pressureBar = tpmsState.rear.pressureBar,
+                temperatureC = tpmsState.rear.temperatureC,
+                status = tpmsState.rear.status,
+                error = tpmsState.rear.lastError
+            )
+        }
+    }
+}
+
+@Composable
+private fun TpmsSensorRow(
+    label: String,
+    pressureBar: Double?,
+    temperatureC: Int?,
+    status: TpmsReadStatus,
+    error: String?
+) {
+    val pressureText = pressureBar?.let { "%.2f bar".format(it) } ?: "—"
+    val temperatureText = temperatureC?.let { "$it °C" } ?: "—"
+
+    Column(modifier = Modifier.padding(top = 4.dp)) {
+        Text(
+            text = "$label: $pressureText | $temperatureText | ${status.name}",
+            style = MaterialTheme.typography.bodyMedium
+        )
+        error?.let {
+            Text(
+                text = it,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error
+            )
         }
     }
 }
