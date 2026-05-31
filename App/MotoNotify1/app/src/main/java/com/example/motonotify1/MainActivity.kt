@@ -376,7 +376,6 @@ private fun TpmsStatusCard(tpmsState: TpmsUiState) {
                 label = "Front",
                 pressureBar = tpmsState.front.pressureBar,
                 temperatureC = tpmsState.front.temperatureC,
-                batteryPercent = tpmsState.front.batteryPercent,
                 status = tpmsState.front.status,
                 error = tpmsState.front.lastError
             )
@@ -384,7 +383,6 @@ private fun TpmsStatusCard(tpmsState: TpmsUiState) {
                 label = "Rear",
                 pressureBar = tpmsState.rear.pressureBar,
                 temperatureC = tpmsState.rear.temperatureC,
-                batteryPercent = tpmsState.rear.batteryPercent,
                 status = tpmsState.rear.status,
                 error = tpmsState.rear.lastError
             )
@@ -397,17 +395,15 @@ private fun TpmsSensorRow(
     label: String,
     pressureBar: Double?,
     temperatureC: Int?,
-    batteryPercent: Int?,
     status: TpmsReadStatus,
     error: String?
 ) {
     val pressureText = pressureBar?.let { "%.2f bar".format(it) } ?: "—"
     val temperatureText = temperatureC?.let { "$it °C" } ?: "—"
-    val batteryText = batteryPercent?.let { "$it%" } ?: "—"
 
     Column(modifier = Modifier.padding(top = 4.dp)) {
         Text(
-            text = "$label: $pressureText | $temperatureText | Bat $batteryText | ${status.name}",
+            text = "$label: $pressureText | $temperatureText | ${status.name}",
             style = MaterialTheme.typography.bodyMedium
         )
         error?.let {

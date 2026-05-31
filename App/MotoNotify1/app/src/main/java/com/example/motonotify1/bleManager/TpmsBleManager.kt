@@ -51,7 +51,6 @@ enum class TpmsReadStatus {
 data class TpmsSensorState(
     val pressureBar: Double? = null,
     val temperatureC: Int? = null,
-    val batteryPercent: Int? = null,
     val status: TpmsReadStatus = TpmsReadStatus.Idle,
     val lastError: String? = null
 )
@@ -70,9 +69,9 @@ data class TpmsUiState(
 /**
  * Manages RiDEET Pro TPMS sensors over BLE.
  *
- * Reads front and rear sensors sequentially using connect -> read FFD1
- * (pressure/temperature) -> read standard Battery Level (2A19) -> disconnect,
- * then forwards values to the ESP32 display via the existing [BleManager] connection.
+ * Reads front and rear sensors sequentially using connect -> read/notify FFD1
+ * (pressure + temperature) -> disconnect, then forwards values to the ESP32
+ * display via the existing [BleManager] connection.
  */
 class TpmsBleManager {
 
@@ -93,12 +92,6 @@ class TpmsBleManager {
     private val tpmsReadCharacteristic = characteristicOf(
         service = TPMS_SERVICE_UUID,
         characteristic = TPMS_CHARACTERISTIC_UUID
-    )
-
-    /** Standard BLE Battery Service — Battery Level (0–100 %). */
-    private val batteryLevelCharacteristic = characteristicOf(
-        service = BATTERY_SERVICE_UUID,
-        characteristic = BATTERY_LEVEL_CHARACTERISTIC_UUID
     )
 
     fun attachServiceScope(scope: CoroutineScope) {
@@ -131,7 +124,6 @@ class TpmsBleManager {
         Log.d(TAG, "Starting periodic TPMS reads")
 
         readLoopJob = scope.launch {
-            // Run one cycle immediately, then wait between cycles.
             while (isActive && running.get()) {
                 runReadCycle()
                 delay(READ_INTERVAL_MS)
@@ -193,7 +185,6 @@ class TpmsBleManager {
         _uiState.update { it.copy(cycleStatus = "Reading sensors…") }
         Log.d(TAG, "TPMS read cycle started")
 
-        // Read front first; if it fails, still attempt rear.
         readSensor(context, TpmsSensorPosition.FRONT, FRONT_SENSOR_MAC)
         readSensor(context, TpmsSensorPosition.REAR, REAR_SENSOR_MAC)
 
@@ -237,7 +228,6 @@ class TpmsBleManager {
                 Log.d(TAG, "Sensor found: $label (${advertisement.address})")
                 peripheral = scope.peripheral(advertisement)
             } else {
-                // Scan timed out — try a direct connect by known MAC as a fallback.
                 Log.d(TAG, "Scan timeout for $label; trying direct connect to $macAddress")
                 peripheral = scope.peripheral(macAddress)
             }
@@ -251,76 +241,42 @@ class TpmsBleManager {
 
             Log.d(TAG, "Connect success: $label ($macAddress)")
 
+            delay(POST_CONNECT_SETTLE_MS)
+
             updateSensorStatus(position, TpmsReadStatus.Reading, null)
 
-            var pressureBar: Double? = null
-            var temperatureC: Int? = null
-            var batteryPercent: Int? = null
-
-            // 1. Read custom TPMS characteristic FFD1 (pressure + temperature).
-            try {
-                val rawTpmsBytes = withTimeout(READ_TIMEOUT_MS) {
-                    peripheral.read(tpmsReadCharacteristic)
-                }
-
-                val tpmsHex = rawTpmsBytes.toHexString()
-                Log.d(TAG, "Raw FFD1 bytes ($label): $tpmsHex")
-
-                val decoded = decodeTpmsData(rawTpmsBytes)
-                if (decoded == null) {
-                    Log.e(
-                        TAG,
-                        "FFD1 decode failed for $label: expected at least 2 bytes, got ${rawTpmsBytes.size}"
-                    )
-                } else {
-                    val (temp, pressure) = decoded
-                    temperatureC = temp
-                    pressureBar = pressure
-                    Log.d(
-                        TAG,
-                        "Decoded $label: pressure=${"%.3f".format(pressureBar)} bar, " +
-                            "temperature=$temperatureC °C"
-                    )
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.e(TAG, "FFD1 read failed for $label sensor", e)
-            }
-
-            // 2. Read standard Battery Level characteristic 2A19 (service 180F).
-            try {
-                val rawBatteryBytes = withTimeout(READ_TIMEOUT_MS) {
-                    peripheral.read(batteryLevelCharacteristic)
-                }
-
-                val batteryHex = rawBatteryBytes.toHexString()
-                Log.d(TAG, "Raw 2A19 bytes ($label): $batteryHex")
-
-                batteryPercent = decodeBatteryLevel(rawBatteryBytes)
-                if (batteryPercent == null) {
-                    Log.e(TAG, "Battery decode failed for $label: empty 2A19 payload")
-                } else {
-                    Log.d(TAG, "Decoded $label battery: $batteryPercent%")
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.e(TAG, "Battery read failed for $label sensor (service 180F / 2A19)", e)
-            }
-
-            if (pressureBar != null && temperatureC != null) {
-                updateSensorReading(position, pressureBar, temperatureC, batteryPercent)
-                sendToEsp32(position, pressureBar, temperatureC, batteryPercent)
-                updateSensorStatus(position, TpmsReadStatus.Success, null)
-            } else {
-                updateSensorReading(position, pressureBar, temperatureC, batteryPercent)
+            val rawBytes = readTpmsPayload(peripheral, label)
+            if (rawBytes == null) {
                 updateSensorStatus(
                     position,
                     TpmsReadStatus.Failed,
-                    "FFD1 pressure/temperature read or decode failed"
+                    "No valid FFD1 payload (need 2 bytes)"
                 )
+                return
             }
+
+            Log.d(TAG, "Raw FFD1 bytes ($label): ${rawBytes.toHexString()}")
+
+            val decoded = decodeTpmsData(rawBytes)
+            if (decoded == null) {
+                Log.e(TAG, "FFD1 decode failed for $label: ${rawBytes.toHexString()}")
+                updateSensorStatus(
+                    position,
+                    TpmsReadStatus.Failed,
+                    "Invalid FFD1 data"
+                )
+                return
+            }
+
+            val (temperatureC, pressureBar) = decoded
+            Log.d(
+                TAG,
+                "Decoded $label: pressure=${"%.3f".format(pressureBar)} bar, temperature=$temperatureC °C"
+            )
+
+            updateSensorReading(position, pressureBar, temperatureC)
+            sendToEsp32(position, pressureBar, temperatureC)
+            updateSensorStatus(position, TpmsReadStatus.Success, null)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -335,6 +291,58 @@ class TpmsBleManager {
                     Log.e(TAG, "Disconnect failed for $label sensor", e)
                 }
             }
+        }
+    }
+
+    /**
+     * Reads FFD1 via READ retries, then NOTIFY fallback. Ignores invalid payloads.
+     */
+    private suspend fun readTpmsPayload(
+        peripheral: Peripheral,
+        label: String
+    ): ByteArray? {
+        repeat(READ_RETRY_COUNT) { attempt ->
+            val bytes = readTpmsOnce(peripheral, label, attempt + 1)
+            if (isValidTpmsPayload(bytes)) {
+                return bytes
+            }
+            if (bytes != null) {
+                Log.w(
+                    TAG,
+                    "FFD1 ignored ($label) attempt ${attempt + 1}: ${bytes.toHexString()}"
+                )
+            }
+            delay(READ_RETRY_DELAY_MS)
+        }
+
+        Log.d(TAG, "FFD1 READ retries exhausted for $label; trying NOTIFY on FFD1")
+        return withTimeoutOrNull(NOTIFY_FALLBACK_TIMEOUT_MS) {
+            peripheral.observe(tpmsReadCharacteristic).first { data ->
+                Log.d(TAG, "FFD1 notify ($label): ${data.toHexString()}")
+                isValidTpmsPayload(data)
+            }
+        }
+    }
+
+    private suspend fun readTpmsOnce(
+        peripheral: Peripheral,
+        label: String,
+        attempt: Int
+    ): ByteArray? {
+        return try {
+            withTimeoutOrNull(READ_TIMEOUT_MS) {
+                peripheral.read(tpmsReadCharacteristic)
+            }?.also { bytes ->
+                Log.d(TAG, "FFD1 read ($label) attempt $attempt: ${bytes.toHexString()}")
+            } ?: run {
+                Log.e(TAG, "FFD1 read timed out ($label) attempt $attempt")
+                null
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "FFD1 read failed ($label) attempt $attempt", e)
+            null
         }
     }
 
@@ -358,25 +366,22 @@ class TpmsBleManager {
 
     private fun updateSensorReading(
         position: TpmsSensorPosition,
-        pressureBar: Double?,
-        temperatureC: Int?,
-        batteryPercent: Int?
+        pressureBar: Double,
+        temperatureC: Int
     ) {
         _uiState.update { state ->
             when (position) {
                 TpmsSensorPosition.FRONT -> state.copy(
                     front = state.front.copy(
                         pressureBar = pressureBar,
-                        temperatureC = temperatureC,
-                        batteryPercent = batteryPercent
+                        temperatureC = temperatureC
                     )
                 )
 
                 TpmsSensorPosition.REAR -> state.copy(
                     rear = state.rear.copy(
                         pressureBar = pressureBar,
-                        temperatureC = temperatureC,
-                        batteryPercent = batteryPercent
+                        temperatureC = temperatureC
                     )
                 )
             }
@@ -386,8 +391,7 @@ class TpmsBleManager {
     private fun sendToEsp32(
         position: TpmsSensorPosition,
         pressureBar: Double,
-        temperatureC: Int,
-        batteryPercent: Int?
+        temperatureC: Int
     ) {
         val bleManager = BleManagerProvider.bleManager
 
@@ -411,17 +415,6 @@ class TpmsBleManager {
 
         bleManager.sendText(temperatureMessage)
         Log.d(TAG, "ESP32 send queued: $temperatureMessage")
-
-        if (batteryPercent != null) {
-            val batteryMessage = when (position) {
-                TpmsSensorPosition.FRONT -> "TPMSFB:$batteryPercent"
-                TpmsSensorPosition.REAR -> "TPMSRB:$batteryPercent"
-            }
-            bleManager.sendText(batteryMessage)
-            Log.d(TAG, "ESP32 send queued: $batteryMessage")
-        } else {
-            Log.e(TAG, "ESP32 battery send skipped (${position.name}): no battery level read")
-        }
     }
 
     private fun hasRequiredBlePermissions(context: Context): Boolean {
@@ -458,38 +451,46 @@ class TpmsBleManager {
         private const val TPMS_SERVICE_UUID = "0000ffd0-0000-1000-8000-00805f9b34fb"
         private const val TPMS_CHARACTERISTIC_UUID = "0000ffd1-0000-1000-8000-00805f9b34fb"
 
-        private const val BATTERY_SERVICE_UUID = "0000180f-0000-1000-8000-00805f9b34fb"
-        private const val BATTERY_LEVEL_CHARACTERISTIC_UUID = "00002a19-0000-1000-8000-00805f9b34fb"
-
         private const val READ_INTERVAL_MS = 30_000L
         private const val SCAN_TIMEOUT_MS = 15_000L
         private const val CONNECT_TIMEOUT_MS = 10_000L
-        private const val READ_TIMEOUT_MS = 5_000L
+        private const val READ_TIMEOUT_MS = 10_000L
+        private const val POST_CONNECT_SETTLE_MS = 500L
+        private const val READ_RETRY_COUNT = 3
+        private const val READ_RETRY_DELAY_MS = 400L
+        private const val NOTIFY_FALLBACK_TIMEOUT_MS = 8_000L
 
         /**
-         * Decodes RiDEET TPMS characteristic FFD1 payload.
-         *
-         * temperatureC = byte0 - 40
-         * pressureBar  = byte1 / 40.0
+         * True when FFD1 has at least 2 bytes and is not the invalid single-byte 0x00 payload.
          */
-        fun decodeTpmsData(data: ByteArray): Pair<Int, Double>? {
-            if (data.size < 2) {
-                return null
+        fun isValidTpmsPayload(data: ByteArray?): Boolean {
+            if (data == null || data.size < 2) {
+                return false
             }
-
-            val temperatureC = (data[0].toInt() and 0xFF) - 40
-            val pressureBar = (data[1].toInt() and 0xFF) / 40.0
-            return temperatureC to pressureBar
+            if (data.size == 1 && data[0] == 0.toByte()) {
+                return false
+            }
+            return true
         }
 
         /**
-         * Decodes standard BLE Battery Level (2A19): first byte as unsigned 0–100 %.
+         * Decodes RiDEET FFD1 (service FFD0, characteristic FFD1).
+         *
+         * byte0 unsigned: temperatureC = raw - 40
+         * byte1 unsigned: pressureBar = raw / 40.0
+         *
+         * Valid: 47 00 -> 31 °C, 0.0 bar; 3D 4F -> 21 °C, 1.975 bar
          */
-        fun decodeBatteryLevel(data: ByteArray): Int? {
-            if (data.isEmpty()) {
+        fun decodeTpmsData(data: ByteArray): Pair<Int, Double>? {
+            if (!isValidTpmsPayload(data)) {
                 return null
             }
-            return (data[0].toInt() and 0xFF).coerceIn(0, 100)
+
+            val tempRaw = data[0].toInt() and 0xFF
+            val pressureRaw = data[1].toInt() and 0xFF
+            val temperatureC = tempRaw - 40
+            val pressureBar = pressureRaw / 40.0
+            return temperatureC to pressureBar
         }
 
         private fun ByteArray.toHexString(): String =
