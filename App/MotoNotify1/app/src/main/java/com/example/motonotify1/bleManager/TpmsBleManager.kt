@@ -51,6 +51,7 @@ enum class TpmsReadStatus {
 data class TpmsSensorState(
     val pressureBar: Double? = null,
     val temperatureC: Int? = null,
+    val batteryPercent: Int? = null,
     val status: TpmsReadStatus = TpmsReadStatus.Idle,
     val lastError: String? = null
 )
@@ -69,9 +70,9 @@ data class TpmsUiState(
 /**
  * Manages RiDEET Pro TPMS sensors over BLE.
  *
- * Reads front and rear tyre pressure/temperature sequentially using a
- * connect -> read FFD1 -> disconnect cycle, then forwards values to the
- * ESP32 display via the existing [BleManager] connection.
+ * Reads front and rear sensors sequentially using connect -> read FFD1
+ * (pressure/temperature) -> read standard Battery Level (2A19) -> disconnect,
+ * then forwards values to the ESP32 display via the existing [BleManager] connection.
  */
 class TpmsBleManager {
 
@@ -92,6 +93,12 @@ class TpmsBleManager {
     private val tpmsReadCharacteristic = characteristicOf(
         service = TPMS_SERVICE_UUID,
         characteristic = TPMS_CHARACTERISTIC_UUID
+    )
+
+    /** Standard BLE Battery Service — Battery Level (0–100 %). */
+    private val batteryLevelCharacteristic = characteristicOf(
+        service = BATTERY_SERVICE_UUID,
+        characteristic = BATTERY_LEVEL_CHARACTERISTIC_UUID
     )
 
     fun attachServiceScope(scope: CoroutineScope) {
@@ -246,34 +253,74 @@ class TpmsBleManager {
 
             updateSensorStatus(position, TpmsReadStatus.Reading, null)
 
-            val rawBytes = withTimeout(READ_TIMEOUT_MS) {
-                peripheral.read(tpmsReadCharacteristic)
+            var pressureBar: Double? = null
+            var temperatureC: Int? = null
+            var batteryPercent: Int? = null
+
+            // 1. Read custom TPMS characteristic FFD1 (pressure + temperature).
+            try {
+                val rawTpmsBytes = withTimeout(READ_TIMEOUT_MS) {
+                    peripheral.read(tpmsReadCharacteristic)
+                }
+
+                val tpmsHex = rawTpmsBytes.toHexString()
+                Log.d(TAG, "Raw FFD1 bytes ($label): $tpmsHex")
+
+                val decoded = decodeTpmsData(rawTpmsBytes)
+                if (decoded == null) {
+                    Log.e(
+                        TAG,
+                        "FFD1 decode failed for $label: expected at least 2 bytes, got ${rawTpmsBytes.size}"
+                    )
+                } else {
+                    val (temp, pressure) = decoded
+                    temperatureC = temp
+                    pressureBar = pressure
+                    Log.d(
+                        TAG,
+                        "Decoded $label: pressure=${"%.3f".format(pressureBar)} bar, " +
+                            "temperature=$temperatureC °C"
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "FFD1 read failed for $label sensor", e)
             }
 
-            val hex = rawBytes.toHexString()
-            Log.d(TAG, "Raw FFD1 bytes ($label): $hex")
+            // 2. Read standard Battery Level characteristic 2A19 (service 180F).
+            try {
+                val rawBatteryBytes = withTimeout(READ_TIMEOUT_MS) {
+                    peripheral.read(batteryLevelCharacteristic)
+                }
 
-            val decoded = decodeTpmsData(rawBytes)
-            if (decoded == null) {
-                Log.e(TAG, "Decode failed for $label: expected at least 2 bytes, got ${rawBytes.size}")
+                val batteryHex = rawBatteryBytes.toHexString()
+                Log.d(TAG, "Raw 2A19 bytes ($label): $batteryHex")
+
+                batteryPercent = decodeBatteryLevel(rawBatteryBytes)
+                if (batteryPercent == null) {
+                    Log.e(TAG, "Battery decode failed for $label: empty 2A19 payload")
+                } else {
+                    Log.d(TAG, "Decoded $label battery: $batteryPercent%")
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Battery read failed for $label sensor (service 180F / 2A19)", e)
+            }
+
+            if (pressureBar != null && temperatureC != null) {
+                updateSensorReading(position, pressureBar, temperatureC, batteryPercent)
+                sendToEsp32(position, pressureBar, temperatureC, batteryPercent)
+                updateSensorStatus(position, TpmsReadStatus.Success, null)
+            } else {
+                updateSensorReading(position, pressureBar, temperatureC, batteryPercent)
                 updateSensorStatus(
                     position,
                     TpmsReadStatus.Failed,
-                    "Invalid data length (${rawBytes.size} bytes)"
+                    "FFD1 pressure/temperature read or decode failed"
                 )
-                return
             }
-
-            val (temperatureC, pressureBar) = decoded
-            Log.d(
-                TAG,
-                "Decoded $label: pressure=${"%.3f".format(pressureBar)} bar, temperature=$temperatureC °C"
-            )
-
-            updateSensorReading(position, pressureBar, temperatureC)
-            sendToEsp32(position, pressureBar, temperatureC)
-
-            updateSensorStatus(position, TpmsReadStatus.Success, null)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -311,22 +358,25 @@ class TpmsBleManager {
 
     private fun updateSensorReading(
         position: TpmsSensorPosition,
-        pressureBar: Double,
-        temperatureC: Int
+        pressureBar: Double?,
+        temperatureC: Int?,
+        batteryPercent: Int?
     ) {
         _uiState.update { state ->
             when (position) {
                 TpmsSensorPosition.FRONT -> state.copy(
                     front = state.front.copy(
                         pressureBar = pressureBar,
-                        temperatureC = temperatureC
+                        temperatureC = temperatureC,
+                        batteryPercent = batteryPercent
                     )
                 )
 
                 TpmsSensorPosition.REAR -> state.copy(
                     rear = state.rear.copy(
                         pressureBar = pressureBar,
-                        temperatureC = temperatureC
+                        temperatureC = temperatureC,
+                        batteryPercent = batteryPercent
                     )
                 )
             }
@@ -336,7 +386,8 @@ class TpmsBleManager {
     private fun sendToEsp32(
         position: TpmsSensorPosition,
         pressureBar: Double,
-        temperatureC: Int
+        temperatureC: Int,
+        batteryPercent: Int?
     ) {
         val bleManager = BleManagerProvider.bleManager
 
@@ -360,6 +411,17 @@ class TpmsBleManager {
 
         bleManager.sendText(temperatureMessage)
         Log.d(TAG, "ESP32 send queued: $temperatureMessage")
+
+        if (batteryPercent != null) {
+            val batteryMessage = when (position) {
+                TpmsSensorPosition.FRONT -> "TPMSFB:$batteryPercent"
+                TpmsSensorPosition.REAR -> "TPMSRB:$batteryPercent"
+            }
+            bleManager.sendText(batteryMessage)
+            Log.d(TAG, "ESP32 send queued: $batteryMessage")
+        } else {
+            Log.e(TAG, "ESP32 battery send skipped (${position.name}): no battery level read")
+        }
     }
 
     private fun hasRequiredBlePermissions(context: Context): Boolean {
@@ -396,6 +458,9 @@ class TpmsBleManager {
         private const val TPMS_SERVICE_UUID = "0000ffd0-0000-1000-8000-00805f9b34fb"
         private const val TPMS_CHARACTERISTIC_UUID = "0000ffd1-0000-1000-8000-00805f9b34fb"
 
+        private const val BATTERY_SERVICE_UUID = "0000180f-0000-1000-8000-00805f9b34fb"
+        private const val BATTERY_LEVEL_CHARACTERISTIC_UUID = "00002a19-0000-1000-8000-00805f9b34fb"
+
         private const val READ_INTERVAL_MS = 30_000L
         private const val SCAN_TIMEOUT_MS = 15_000L
         private const val CONNECT_TIMEOUT_MS = 10_000L
@@ -415,6 +480,16 @@ class TpmsBleManager {
             val temperatureC = (data[0].toInt() and 0xFF) - 40
             val pressureBar = (data[1].toInt() and 0xFF) / 40.0
             return temperatureC to pressureBar
+        }
+
+        /**
+         * Decodes standard BLE Battery Level (2A19): first byte as unsigned 0–100 %.
+         */
+        fun decodeBatteryLevel(data: ByteArray): Int? {
+            if (data.isEmpty()) {
+                return null
+            }
+            return (data[0].toInt() and 0xFF).coerceIn(0, 100)
         }
 
         private fun ByteArray.toHexString(): String =
