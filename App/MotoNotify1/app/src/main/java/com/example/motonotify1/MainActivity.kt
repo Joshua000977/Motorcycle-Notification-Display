@@ -22,9 +22,14 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import com.example.motonotify1.bleManager.BleConnectionPhase
+import com.example.motonotify1.bleManager.OtaPreparePhase
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
@@ -37,12 +42,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import com.example.motonotify1.BleManager.BleManagerProvider
+import com.example.motonotify1.bleManager.BleManagerProvider
+import com.example.motonotify1.bleManager.TpmsBleManagerProvider
+import com.example.motonotify1.bleManager.TpmsReadStatus
+import com.example.motonotify1.bleManager.TpmsUiState
 import com.example.motonotify1.ui.theme.MotoNotify1Theme
 import android.content.Intent
-import android.util.Log
-import androidx.core.content.ContextCompat.startForegroundService
-import com.example.motonotify1.service.foregroundService.MotoForegroundService
+import com.example.motonotify1.service.foregroundService.ForegroundBleService
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -62,10 +68,14 @@ private fun BleTestScreen(modifier: Modifier = Modifier) {
     val bleManager = remember {
         BleManagerProvider.bleManager
     }
+    val tpmsBleManager = remember {
+        TpmsBleManagerProvider.tpmsBleManager
+    }
     val uiState by bleManager.uiState.collectAsState()
+    val tpmsState by tpmsBleManager.uiState.collectAsState()
     var textToSend by remember { mutableStateOf("") }
 
-    val permissions = remember {
+        val permissions = remember {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             arrayOf(
                 Manifest.permission.BLUETOOTH_SCAN,
@@ -90,7 +100,10 @@ private fun BleTestScreen(modifier: Modifier = Modifier) {
         contract = ActivityResultContracts.RequestMultiplePermissions()
     ) { result ->
         if (result.values.all { it }) {
-            bleManager.startScan()
+            ContextCompat.startForegroundService(
+                context,
+                Intent(context, ForegroundBleService::class.java)
+            )
         }
     }
 
@@ -99,7 +112,7 @@ private fun BleTestScreen(modifier: Modifier = Modifier) {
 
             val serviceIntent = Intent(
                 context,
-                MotoForegroundService::class.java
+                ForegroundBleService::class.java
             )
             ContextCompat.startForegroundService(
                 context,
@@ -125,6 +138,108 @@ private fun BleTestScreen(modifier: Modifier = Modifier) {
             text = "State: ${uiState.connectionState}${if (uiState.isScanning) " | Scanning" else ""}",
             style = MaterialTheme.typography.titleMedium
         )
+        Text(
+            text = "ESP IP: ${uiState.espIp}",
+            style = MaterialTheme.typography.bodyLarge
+        )
+        Text(
+            text = "WiFi: ${uiState.wifiStatus}",
+            style = MaterialTheme.typography.bodyMedium
+        )
+
+        TpmsStatusCard(tpmsState = tpmsState)
+
+        val isConnected = uiState.phase == BleConnectionPhase.Connected
+        val otaWaiting = uiState.otaPreparePhase == OtaPreparePhase.Waiting
+        val notificationsBlocked = uiState.otaModeActive
+
+        Button(
+            onClick = { bleManager.enterOtaMode() },
+            enabled = isConnected && !otaWaiting
+        ) {
+            Text("Enter OTA Mode")
+        }
+
+        if (otaWaiting) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                CircularProgressIndicator()
+                Text(
+                    text = "Waiting for IP:…",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+        }
+
+        if (uiState.otaPreparePhase == OtaPreparePhase.Ready) {
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.primaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                ),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Text(
+                        text = uiState.otaPrepareMessage ?: "Device ready for OTA",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Text(
+                        text = uiState.espIp,
+                        style = MaterialTheme.typography.bodyLarge,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                    Text(
+                        text = "Upload firmware from your computer to this address.",
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                }
+            }
+        } else {
+            uiState.otaPrepareMessage?.let { message ->
+                val isError = uiState.otaPreparePhase == OtaPreparePhase.TimedOut ||
+                    uiState.otaPreparePhase == OtaPreparePhase.Failed
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (isError) {
+                            MaterialTheme.colorScheme.errorContainer
+                        } else {
+                            MaterialTheme.colorScheme.surfaceVariant
+                        },
+                        contentColor = if (isError) {
+                            MaterialTheme.colorScheme.onErrorContainer
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = message,
+                        modifier = Modifier.padding(12.dp),
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+            }
+        }
+
+        if (notificationsBlocked && uiState.otaPreparePhase == OtaPreparePhase.Ready) {
+            OutlinedButton(onClick = { bleManager.exitOtaMode() }) {
+                Text("Resume notifications")
+            }
+        }
+
+        if (notificationsBlocked) {
+            Text(
+                text = "Notification sending paused (OTA mode)",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
         Button(
             onClick = {
 
@@ -148,11 +263,12 @@ private fun BleTestScreen(modifier: Modifier = Modifier) {
         Button(
             onClick = {
                 if (hasAllPermissions()) {
-
+                    ContextCompat.startForegroundService(
+                        context,
+                        Intent(context, ForegroundBleService::class.java)
+                    )
                     bleManager.startScan()
-
                 } else {
-
                     bleManager.log("Missing permissions")
                 }
             }
@@ -188,7 +304,8 @@ private fun BleTestScreen(modifier: Modifier = Modifier) {
                 value = textToSend,
                 onValueChange = { textToSend = it },
                 label = { Text("Text to send") },
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.weight(1f),
+                enabled = !notificationsBlocked
             )
             Spacer(modifier = Modifier.width(8.dp))
             Button(
@@ -196,7 +313,8 @@ private fun BleTestScreen(modifier: Modifier = Modifier) {
                     bleManager.sendText(textToSend)
                     textToSend = ""
                 },
-                modifier = Modifier.padding(start = 8.dp)
+                modifier = Modifier.padding(start = 8.dp),
+                enabled = !notificationsBlocked && textToSend.isNotBlank()
             ) {
                 Text("Send")
             }
@@ -220,6 +338,84 @@ private fun BleTestScreen(modifier: Modifier = Modifier) {
                     style = MaterialTheme.typography.bodySmall
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun TpmsStatusCard(tpmsState: TpmsUiState) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+            contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                text = "TPMS (RiDEET Pro)",
+                style = MaterialTheme.typography.titleMedium
+            )
+            Text(
+                text = "Cycle: ${tpmsState.cycleStatus}",
+                style = MaterialTheme.typography.bodySmall
+            )
+            Text(
+                text = "Last update: ${tpmsState.lastUpdateTimeText}",
+                style = MaterialTheme.typography.bodySmall
+            )
+            Text(
+                text = "BT: ${if (tpmsState.bluetoothAvailable) "On" else "Off"} | " +
+                    "Permissions: ${if (tpmsState.permissionsGranted) "OK" else "Missing"}",
+                style = MaterialTheme.typography.bodySmall
+            )
+            TpmsSensorRow(
+                label = "Front",
+                pressureBar = tpmsState.front.pressureBar,
+                temperatureC = tpmsState.front.temperatureC,
+                batteryPercent = tpmsState.front.batteryPercent,
+                status = tpmsState.front.status,
+                error = tpmsState.front.lastError
+            )
+            TpmsSensorRow(
+                label = "Rear",
+                pressureBar = tpmsState.rear.pressureBar,
+                temperatureC = tpmsState.rear.temperatureC,
+                batteryPercent = tpmsState.rear.batteryPercent,
+                status = tpmsState.rear.status,
+                error = tpmsState.rear.lastError
+            )
+        }
+    }
+}
+
+@Composable
+private fun TpmsSensorRow(
+    label: String,
+    pressureBar: Double?,
+    temperatureC: Int?,
+    batteryPercent: Int?,
+    status: TpmsReadStatus,
+    error: String?
+) {
+    val pressureText = pressureBar?.let { "%.2f bar".format(it) } ?: "—"
+    val temperatureText = temperatureC?.let { "$it °C" } ?: "—"
+    val batteryText = batteryPercent?.let { "$it%" } ?: "—"
+
+    Column(modifier = Modifier.padding(top = 4.dp)) {
+        Text(
+            text = "$label: $pressureText | $temperatureText | Bat $batteryText | ${status.name}",
+            style = MaterialTheme.typography.bodyMedium
+        )
+        error?.let {
+            Text(
+                text = it,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error
+            )
         }
     }
 }

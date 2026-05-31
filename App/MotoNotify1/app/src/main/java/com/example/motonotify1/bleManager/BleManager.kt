@@ -1,0 +1,973 @@
+package com.example.motonotify1.bleManager
+
+import android.content.Context
+import android.util.Log
+import com.example.motonotify1.service.battery.BatteryReporter
+import com.example.motonotify1.service.battery.PhoneBatteryMonitor
+import com.example.motonotify1.service.foregroundService.ForegroundBleService
+import com.juul.kable.Peripheral
+import com.juul.kable.Scanner
+import com.juul.kable.State
+import com.juul.kable.characteristicOf
+import com.juul.kable.peripheral
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withTimeout
+import java.util.concurrent.atomic.AtomicBoolean
+
+enum class BleConnectionPhase {
+    Disconnected,
+    Scanning,
+    Connecting,
+    Connected,
+    Reconnecting
+}
+
+enum class OtaPreparePhase {
+    Idle,
+    Waiting,
+    Ready,
+    TimedOut,
+    Failed
+}
+
+data class BleDeviceUi(
+    val name: String,
+    val address: String,
+    val peripheral: Peripheral
+)
+
+data class BleUiState(
+    val phase: BleConnectionPhase = BleConnectionPhase.Disconnected,
+    val isScanning: Boolean = false,
+    val devices: List<BleDeviceUi> = emptyList(),
+    val espIp: String = "No IP",
+    val wifiStatus: String = "Unknown",
+    val otaModeActive: Boolean = false,
+    val otaPreparePhase: OtaPreparePhase = OtaPreparePhase.Idle,
+    val otaPrepareMessage: String? = null,
+    val logs: List<String> = emptyList()
+) {
+    val connectionState: String
+        get() = when (phase) {
+            BleConnectionPhase.Disconnected -> "Disconnected"
+            BleConnectionPhase.Scanning -> "Scanning"
+            BleConnectionPhase.Connecting -> "Connecting"
+            BleConnectionPhase.Connected -> "Connected"
+            BleConnectionPhase.Reconnecting -> "Reconnecting"
+        }
+}
+
+class BleManager {
+
+    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    @Volatile
+    private var serviceScope: CoroutineScope? = null
+
+    private val foregroundOpsRunning = AtomicBoolean(false)
+
+    private val _uiState = MutableStateFlow(BleUiState())
+    val uiState: StateFlow<BleUiState> = _uiState.asStateFlow()
+
+    private var scanner: Scanner? = null
+    private var peripheral: Peripheral? = null
+    private var lastKnownDevice: BleDeviceUi? = null
+
+    private var scanJob: Job? = null
+    private var connectionJob: Job? = null
+    private var notifyJob: Job? = null
+    private var reconnectJob: Job? = null
+    private var otaPrepareJob: Job? = null
+
+    @Volatile
+    private var otaIpAwaiter: CompletableDeferred<String>? = null
+
+    private var disconnectDebounceJob: Job? = null
+
+    private var manualDisconnect = false
+    private val isHandlingDisconnect = AtomicBoolean(false)
+    private var disconnectGeneration = 0
+
+    private var batteryReporter: BatteryReporter? = null
+
+    private val writeCharacteristic = characteristicOf(
+        service = NUS_SERVICE_UUID,
+        characteristic = NUS_TX_CHARACTERISTIC_UUID
+    )
+
+    private val notifyCharacteristic = characteristicOf(
+        service = NUS_SERVICE_UUID,
+        characteristic = NUS_RX_CHARACTERISTIC_UUID
+    )
+
+    fun attachServiceScope(scope: CoroutineScope) {
+        serviceScope = scope
+        log("Service scope attached")
+    }
+
+    fun detachServiceScope() {
+        serviceScope = null
+        log("Service scope detached")
+    }
+
+    fun attachBatteryMonitoring(appContext: Context) {
+        if (batteryReporter != null) {
+            return
+        }
+
+        val scope = serviceScope ?: appScope
+
+        batteryReporter = BatteryReporter(
+            bleManager = this,
+            monitor = PhoneBatteryMonitor(appContext.applicationContext),
+            scope = scope
+        )
+
+        log("Battery monitoring attached")
+    }
+
+    fun detachBatteryMonitoring() {
+        batteryReporter?.shutdown()
+        batteryReporter = null
+        log("Battery monitoring detached")
+    }
+
+    fun isBleConnected(): Boolean {
+        return _uiState.value.phase == BleConnectionPhase.Connected && peripheral != null
+    }
+
+    fun sendBatteryPercent(percent: Int) {
+        val clamped = percent.coerceIn(0, 100)
+        sendTextInternal("BAT:$clamped", bypassOtaBlock = true)
+    }
+
+    fun startForegroundBleOperations() {
+        val scope = serviceScope
+
+        if (scope == null) {
+            log("startForegroundBleOperations: service scope not attached")
+            return
+        }
+
+        manualDisconnect = false
+        foregroundOpsRunning.set(true)
+
+        log("Starting foreground BLE operations")
+        ForegroundBleService.instance?.updateNotification("Connecting…")
+
+        scheduleRecovery(scope)
+    }
+
+    fun stopForegroundBleOperations() {
+        if (!foregroundOpsRunning.compareAndSet(true, false)) {
+            return
+        }
+
+        log("Stopping foreground BLE operations")
+
+        detachBatteryMonitoring()
+
+        disconnectDebounceJob?.cancel()
+        disconnectDebounceJob = null
+
+        reconnectJob?.cancel()
+        reconnectJob = null
+
+        notifyJob?.cancel()
+        notifyJob = null
+
+        connectionJob?.cancel()
+        connectionJob = null
+
+        stopScanInternal()
+
+        val activePeripheral = peripheral
+        peripheral = null
+
+        val scope = serviceScope
+
+        if (scope != null) {
+            scope.launch {
+                try {
+                    activePeripheral?.disconnect()
+                } catch (_: Exception) {
+                }
+
+                updatePhase(BleConnectionPhase.Disconnected)
+            }
+        } else {
+            updatePhase(BleConnectionPhase.Disconnected)
+        }
+    }
+
+    fun startScan() {
+        val scope = serviceScope ?: appScope
+        manualDisconnect = false
+        foregroundOpsRunning.set(true)
+        startScanIfNeeded(scope)
+    }
+
+    fun stopScan() {
+        stopScanInternal()
+    }
+
+    fun connect(device: BleDeviceUi) {
+        val scope = serviceScope ?: appScope
+        manualDisconnect = false
+        foregroundOpsRunning.set(true)
+        connectInternal(scope, device)
+    }
+
+    fun disconnect() {
+        manualDisconnect = true
+
+        disconnectDebounceJob?.cancel()
+        disconnectDebounceJob = null
+
+        reconnectJob?.cancel()
+        reconnectJob = null
+
+        notifyJob?.cancel()
+        notifyJob = null
+
+        connectionJob?.cancel()
+        connectionJob = null
+
+        stopScanInternal()
+
+        batteryReporter?.onBleDisconnected()
+
+        val activePeripheral = peripheral
+        peripheral = null
+
+        val scope = serviceScope ?: appScope
+
+        scope.launch {
+            try {
+                activePeripheral?.disconnect()
+            } catch (_: Exception) {
+            }
+
+            updatePhase(BleConnectionPhase.Disconnected)
+            ForegroundBleService.instance?.updateNotification("Disconnected")
+        }
+    }
+
+    fun enterOtaMode() {
+        val scope = serviceScope ?: appScope
+
+        if (_uiState.value.phase != BleConnectionPhase.Connected || peripheral == null) {
+            _uiState.update {
+                it.copy(
+                    otaPreparePhase = OtaPreparePhase.Failed,
+                    otaPrepareMessage = "Connect to the display before entering OTA mode"
+                )
+            }
+            return
+        }
+
+        if (_uiState.value.otaPreparePhase == OtaPreparePhase.Waiting) {
+            return
+        }
+
+        otaPrepareJob?.cancel()
+
+        otaPrepareJob = scope.launch {
+            var ipAwaiter: CompletableDeferred<String>? = null
+
+            try {
+                _uiState.update {
+                    it.copy(
+                        otaModeActive = true,
+                        otaPreparePhase = OtaPreparePhase.Waiting,
+                        otaPrepareMessage = null
+                    )
+                }
+
+                val activePeripheral = peripheral
+                    ?: throw IllegalStateException("Not connected")
+
+                ipAwaiter = CompletableDeferred()
+                otaIpAwaiter = ipAwaiter
+
+                activePeripheral.write(
+                    characteristic = writeCharacteristic,
+                    data = OTA_START_COMMAND.encodeToByteArray()
+                )
+
+                log("OTA: sent $OTA_START_COMMAND, waiting for IP:…")
+
+                val ip = withTimeout(OTA_PREPARE_TIMEOUT_MS) {
+                    ipAwaiter.await()
+                }
+
+                _uiState.update {
+                    it.copy(
+                        otaModeActive = true,
+                        otaPreparePhase = OtaPreparePhase.Ready,
+                        otaPrepareMessage = OTA_READY_MESSAGE,
+                        espIp = ip
+                    )
+                }
+
+                log("OTA: device ready, IP: $ip")
+                ForegroundBleService.instance?.updateNotification("OTA ready — $ip")
+            } catch (_: TimeoutCancellationException) {
+                _uiState.update {
+                    it.copy(
+                        otaModeActive = false,
+                        otaPreparePhase = OtaPreparePhase.TimedOut,
+                        otaPrepareMessage = "No IP: response within ${OTA_PREPARE_TIMEOUT_MS / 1000} seconds"
+                    )
+                }
+
+                log("OTA: timed out waiting for IP:")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        otaModeActive = false,
+                        otaPreparePhase = OtaPreparePhase.Failed,
+                        otaPrepareMessage = e.message ?: "OTA prepare failed"
+                    )
+                }
+
+                logError("OTA prepare failed", e)
+            } finally {
+                ipAwaiter?.cancel()
+
+                if (otaIpAwaiter === ipAwaiter) {
+                    otaIpAwaiter = null
+                }
+            }
+        }
+    }
+
+    fun exitOtaMode() {
+        otaPrepareJob?.cancel()
+        otaPrepareJob = null
+
+        otaIpAwaiter?.cancel()
+        otaIpAwaiter = null
+
+        _uiState.update {
+            it.copy(
+                otaModeActive = false,
+                otaPreparePhase = OtaPreparePhase.Idle,
+                otaPrepareMessage = null
+            )
+        }
+
+        log("OTA mode cleared on phone")
+    }
+
+    fun sendText(text: String) {
+        sendTextInternal(text, bypassOtaBlock = false)
+    }
+
+    private fun sendTextInternal(text: String, bypassOtaBlock: Boolean) {
+        if (_uiState.value.otaModeActive && !bypassOtaBlock) {
+            log("Blocked send, OTA mode active: $text")
+            return
+        }
+
+        val activePeripheral = peripheral
+
+        if (activePeripheral == null) {
+            log("Send skipped, not connected: $text")
+            return
+        }
+
+        val scope = serviceScope ?: appScope
+
+        scope.launch {
+            try {
+                activePeripheral.write(
+                    characteristic = writeCharacteristic,
+                    data = text.encodeToByteArray()
+                )
+
+                log("Sent: $text")
+            } catch (e: Exception) {
+                if (e !is CancellationException) {
+                    logError("Send failed", e)
+                    scheduleDisconnectHandling(scope, immediate = true)
+                }
+            }
+        }
+    }
+
+    fun close() {
+        stopForegroundBleOperations()
+        disconnect()
+        appScope.cancel()
+    }
+
+    private fun startScanIfNeeded(scope: CoroutineScope) {
+        if (scanJob?.isActive == true) {
+            return
+        }
+
+        if (_uiState.value.phase == BleConnectionPhase.Connected) {
+            return
+        }
+
+        stopScanInternal()
+
+        _uiState.update {
+            it.copy(
+                phase = BleConnectionPhase.Scanning,
+                isScanning = true
+            )
+        }
+
+        val localScanner = Scanner()
+        scanner = localScanner
+
+        scanJob = scope.launch {
+            try {
+                localScanner.advertisements.collect { advertisement ->
+                    val name = advertisement.name ?: return@collect
+
+                    if (name != TARGET_DEVICE_NAME) {
+                        return@collect
+                    }
+
+                    val device = BleDeviceUi(
+                        name = name,
+                        address = advertisement.address,
+                        peripheral = peripheral(advertisement)
+                    )
+
+                    _uiState.update { state ->
+                        val list = state.devices.toMutableList()
+
+                        if (list.none { it.address == device.address }) {
+                            list.add(device)
+                        }
+
+                        state.copy(devices = list)
+                    }
+
+                    log("Found device: ${device.name} (${device.address})")
+
+                    if (shouldAutoConnectFromScan()) {
+                        log("Auto-connecting from scan")
+                        connectInternal(scope, device)
+                    }
+                }
+            } catch (e: Exception) {
+                if (e !is CancellationException) {
+                    logError("Scan failed", e)
+                }
+            } finally {
+                _uiState.update {
+                    it.copy(isScanning = false)
+                }
+            }
+        }
+    }
+
+    private fun stopScanInternal() {
+        scanJob?.cancel()
+        scanJob = null
+        scanner = null
+
+        _uiState.update { state ->
+            val phase = if (state.phase == BleConnectionPhase.Scanning) {
+                BleConnectionPhase.Disconnected
+            } else {
+                state.phase
+            }
+
+            state.copy(
+                isScanning = false,
+                phase = phase
+            )
+        }
+    }
+
+    private fun shouldAutoConnectFromScan(): Boolean {
+        val phase = _uiState.value.phase
+
+        return peripheral == null &&
+                connectionJob?.isActive != true &&
+                reconnectJob?.isActive != true &&
+                !manualDisconnect &&
+                phase != BleConnectionPhase.Connected &&
+                phase != BleConnectionPhase.Connecting
+    }
+
+    private fun connectInternal(scope: CoroutineScope, device: BleDeviceUi) {
+        if (connectionJob?.isActive == true) {
+            log("Connect skipped: connection already in progress")
+            return
+        }
+
+        disconnectGeneration++
+
+        disconnectDebounceJob?.cancel()
+        disconnectDebounceJob = null
+
+        connectionJob?.cancel()
+
+        notifyJob?.cancel()
+        notifyJob = null
+
+        reconnectJob?.cancel()
+        reconnectJob = null
+
+        peripheral = device.peripheral
+        lastKnownDevice = device
+
+        connectionJob = scope.launch {
+            try {
+                updatePhase(BleConnectionPhase.Connecting)
+                ForegroundBleService.instance?.updateNotification("Connecting…")
+                log("Connecting to ${device.address}")
+
+                withTimeout(CONNECT_TIMEOUT_MS) {
+                    device.peripheral.connect()
+                }
+
+                stopScanInternal()
+
+                updatePhase(BleConnectionPhase.Connected)
+                ForegroundBleService.instance?.updateNotification("Connected")
+                log("Connected to ${device.name}")
+
+                startNotifyObserver(scope, device.peripheral)
+                batteryReporter?.onBleConnected()
+
+                observePeripheralState(scope, device.peripheral)
+            } catch (e: Exception) {
+                if (e is CancellationException) {
+                    return@launch
+                }
+
+                logError("Connection failed", e)
+                scheduleDisconnectHandling(scope, immediate = true)
+            }
+        }
+    }
+
+    private suspend fun observePeripheralState(
+        scope: CoroutineScope,
+        activePeripheral: Peripheral
+    ) {
+        activePeripheral.state.collect { state ->
+            when (state) {
+                is State.Connected -> {
+                    updatePhase(BleConnectionPhase.Connected)
+                }
+
+                is State.Disconnected -> {
+                    if (peripheral !== activePeripheral) {
+                        log("Disconnected state ignored from old peripheral")
+                        return@collect
+                    }
+
+                    log("Peripheral disconnected")
+                    scheduleDisconnectHandling(scope)
+                    return@collect
+                }
+
+                else -> Unit
+            }
+        }
+    }
+
+    private fun scheduleDisconnectHandling(
+        scope: CoroutineScope,
+        immediate: Boolean = false
+    ) {
+        val generation = ++disconnectGeneration
+
+        disconnectDebounceJob?.cancel()
+
+        disconnectDebounceJob = scope.launch {
+            if (!immediate) {
+                delay(DISCONNECT_DEBOUNCE_MS)
+            }
+
+            if (generation != disconnectGeneration) {
+                return@launch
+            }
+
+            handleDisconnect(scope)
+        }
+    }
+
+    private fun scheduleRecovery(
+        scope: CoroutineScope,
+        afterDisconnect: Boolean = false
+    ) {
+        if (manualDisconnect || !foregroundOpsRunning.get()) {
+            return
+        }
+
+        if (_uiState.value.phase == BleConnectionPhase.Connected) {
+            return
+        }
+
+        if (connectionJob?.isActive == true || reconnectJob?.isActive == true) {
+            return
+        }
+
+        val known = lastKnownDevice
+
+        if (known != null) {
+            ensureReconnectScheduled(
+                scope = scope,
+                skipInitialDelay = !afterDisconnect
+            )
+        } else {
+            startScanIfNeeded(scope)
+        }
+    }
+
+    private fun startNotifyObserver(
+        scope: CoroutineScope,
+        activePeripheral: Peripheral
+    ) {
+        notifyJob?.cancel()
+
+        notifyJob = scope.launch {
+            try {
+                activePeripheral.observe(notifyCharacteristic).collect { data ->
+                    handleEspNotification(decodeEspPayload(data))
+                }
+            } catch (e: Exception) {
+                if (e !is CancellationException) {
+                    logError("Notify observer failed", e)
+                    scheduleDisconnectHandling(scope, immediate = true)
+                }
+            }
+        }
+    }
+
+    private fun decodeEspPayload(data: ByteArray): String {
+        return data
+            .decodeToString()
+            .trim { it <= ' ' || it == '\u0000' }
+    }
+
+    private fun handleEspNotification(raw: String) {
+        if (raw.isEmpty()) {
+            return
+        }
+
+        raw.lineSequence()
+            .map { it.trim { ch -> ch <= ' ' || ch == '\u0000' } }
+            .filter { it.isNotEmpty() }
+            .forEach { line ->
+                handleEspLine(line)
+            }
+    }
+
+    private fun handleEspLine(message: String) {
+        log("ESP: $message")
+
+        when {
+            message.startsWith("IP:", ignoreCase = true) -> {
+                val ip = message.substringAfter(":").trim()
+
+                if (ip.isEmpty()) {
+                    return
+                }
+
+                deliverIpNotify(message, ip)
+            }
+
+            message.startsWith("WiFi:", ignoreCase = true) -> {
+                val value = message.substringAfter(":").trim()
+
+                if (_uiState.value.otaPreparePhase == OtaPreparePhase.Waiting) {
+                    log("OTA: received WiFi notify: $message")
+                }
+
+                _uiState.update {
+                    it.copy(wifiStatus = value)
+                }
+            }
+
+            message.startsWith("OTA:", ignoreCase = true) -> {
+                log("OTA: received notify: $message")
+            }
+
+            message.equals("WIFI_FAILED", ignoreCase = true) -> {
+                log("OTA: received WiFi failure notify: $message")
+
+                _uiState.update {
+                    it.copy(wifiStatus = "Failed")
+                }
+
+                failOtaPrepareIfWaiting("WiFi connection failed on ESP")
+            }
+
+            else -> {
+                if (_uiState.value.otaPreparePhase == OtaPreparePhase.Waiting) {
+                    log("OTA: received notify while waiting for IP: $message")
+                } else {
+                    log("ESP unhandled: $message")
+                }
+            }
+        }
+    }
+
+    private fun deliverIpNotify(
+        rawMessage: String,
+        ip: String
+    ) {
+        val waitingForOta = _uiState.value.otaPreparePhase == OtaPreparePhase.Waiting
+
+        if (waitingForOta) {
+            log("OTA: received IP notify: $rawMessage")
+        }
+
+        _uiState.update {
+            it.copy(espIp = ip)
+        }
+
+        if (waitingForOta) {
+            val awaiter = otaIpAwaiter
+
+            if (awaiter != null && !awaiter.isCompleted) {
+                awaiter.complete(ip)
+            } else {
+                log("OTA: duplicate IP notify ignored: $rawMessage")
+            }
+
+            return
+        }
+
+        ForegroundBleService.instance?.updateNotification("ESP $ip")
+    }
+
+    private fun failOtaPrepareIfWaiting(reason: String) {
+        if (_uiState.value.otaPreparePhase != OtaPreparePhase.Waiting) {
+            return
+        }
+
+        log("OTA: prepare failed, $reason")
+
+        otaIpAwaiter?.cancel()
+        otaIpAwaiter = null
+
+        otaPrepareJob?.cancel()
+        otaPrepareJob = null
+
+        _uiState.update {
+            it.copy(
+                otaModeActive = false,
+                otaPreparePhase = OtaPreparePhase.Failed,
+                otaPrepareMessage = reason
+            )
+        }
+    }
+
+    private fun handleDisconnect(scope: CoroutineScope) {
+        if (!isHandlingDisconnect.compareAndSet(false, true)) {
+            return
+        }
+
+        try {
+            disconnectDebounceJob?.cancel()
+            disconnectDebounceJob = null
+
+            otaPrepareJob?.cancel()
+            otaPrepareJob = null
+
+            otaIpAwaiter?.cancel()
+            otaIpAwaiter = null
+
+            _uiState.update {
+                it.copy(
+                    otaModeActive = false,
+                    otaPreparePhase = OtaPreparePhase.Idle,
+                    otaPrepareMessage = null
+                )
+            }
+
+            connectionJob?.cancel()
+            connectionJob = null
+
+            notifyJob?.cancel()
+            notifyJob = null
+
+            batteryReporter?.onBleDisconnected()
+
+            val activePeripheral = peripheral
+            peripheral = null
+
+            scope.launch {
+                try {
+                    activePeripheral?.disconnect()
+                } catch (_: Exception) {
+                }
+            }
+
+            updatePhase(BleConnectionPhase.Disconnected)
+            ForegroundBleService.instance?.updateNotification("Disconnected")
+
+            log("Link down, scheduling recovery")
+
+            scheduleRecovery(scope, afterDisconnect = true)
+        } finally {
+            isHandlingDisconnect.set(false)
+        }
+    }
+
+    private fun ensureReconnectScheduled(
+        scope: CoroutineScope,
+        skipInitialDelay: Boolean = false
+    ) {
+        if (manualDisconnect || !foregroundOpsRunning.get()) {
+            return
+        }
+
+        if (reconnectJob?.isActive == true) {
+            return
+        }
+
+        if (_uiState.value.phase == BleConnectionPhase.Connected) {
+            return
+        }
+
+        if (connectionJob?.isActive == true) {
+            return
+        }
+
+        val known = lastKnownDevice ?: return
+
+        reconnectJob = scope.launch {
+            updatePhase(BleConnectionPhase.Reconnecting)
+            ForegroundBleService.instance?.updateNotification("Reconnecting…")
+
+            if (!skipInitialDelay) {
+                delay(RECONNECT_INITIAL_DELAY_MS)
+            }
+
+            while (
+                isActive &&
+                foregroundOpsRunning.get() &&
+                !manualDisconnect
+            ) {
+                if (connectionJob?.isActive == true) {
+                    delay(RECONNECT_POLL_MS)
+                    continue
+                }
+
+                if (_uiState.value.phase == BleConnectionPhase.Connected) {
+                    break
+                }
+
+                try {
+                    log("Reconnect attempt to ${known.address}")
+
+                    val freshPeripheral = scope.peripheral(known.address)
+
+                    val freshDevice = BleDeviceUi(
+                        name = known.name,
+                        address = known.address,
+                        peripheral = freshPeripheral
+                    )
+
+                    lastKnownDevice = freshDevice
+
+                    connectInternal(scope, freshDevice)
+
+                    delay(RECONNECT_ATTEMPT_WINDOW_MS)
+
+                    if (_uiState.value.phase == BleConnectionPhase.Connected) {
+                        log("Reconnect succeeded")
+                        break
+                    }
+                } catch (e: Exception) {
+                    if (e is CancellationException) {
+                        return@launch
+                    }
+
+                    logError("Reconnect attempt failed", e)
+                }
+
+                delay(RECONNECT_INTERVAL_MS)
+            }
+
+            reconnectJob = null
+
+            if (_uiState.value.phase != BleConnectionPhase.Connected) {
+                updatePhase(BleConnectionPhase.Disconnected)
+            }
+        }
+    }
+
+    private fun updatePhase(phase: BleConnectionPhase) {
+        _uiState.update {
+            it.copy(phase = phase)
+        }
+    }
+
+    fun log(message: String) {
+        Log.d(TAG, message)
+
+        _uiState.update {
+            it.copy(
+                logs = (it.logs + message).takeLast(MAX_LOG_LINES)
+            )
+        }
+    }
+
+    fun logError(
+        message: String,
+        throwable: Throwable
+    ) {
+        Log.e(TAG, message, throwable)
+
+        _uiState.update {
+            it.copy(
+                logs = (it.logs + "$message: ${throwable.message}")
+                    .takeLast(MAX_LOG_LINES)
+            )
+        }
+    }
+
+    companion object {
+        private const val TAG = "BleManager"
+
+        private const val TARGET_DEVICE_NAME = "MotoNotifyDisplay"
+
+        private const val NUS_SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
+        private const val NUS_TX_CHARACTERISTIC_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
+        private const val NUS_RX_CHARACTERISTIC_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
+
+        private const val CONNECT_TIMEOUT_MS = 15_000L
+        private const val DISCONNECT_DEBOUNCE_MS = 1_500L
+
+        private const val RECONNECT_INITIAL_DELAY_MS = 2_000L
+        private const val RECONNECT_INTERVAL_MS = 8_000L
+        private const val RECONNECT_ATTEMPT_WINDOW_MS = 25_000L
+        private const val RECONNECT_POLL_MS = 2_000L
+
+        private const val MAX_LOG_LINES = 40
+
+        private const val OTA_START_COMMAND = "OTA_START"
+        private const val OTA_READY_MESSAGE = "Device ready for OTA"
+        private const val OTA_PREPARE_TIMEOUT_MS = 20_000L
+    }
+}
