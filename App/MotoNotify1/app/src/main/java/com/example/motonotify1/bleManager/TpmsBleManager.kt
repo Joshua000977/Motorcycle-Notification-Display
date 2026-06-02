@@ -26,7 +26,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -85,6 +86,13 @@ class TpmsBleManager {
 
     private val running = AtomicBoolean(false)
     private var readLoopJob: Job? = null
+    private val operationMutex = Mutex()
+
+    @Volatile
+    private var tpmsPeripheral: Peripheral? = null
+
+    @Volatile
+    private var tpmsPeripheralScope: CoroutineScope? = null
 
     private val _uiState = MutableStateFlow(TpmsUiState())
     val uiState: StateFlow<TpmsUiState> = _uiState.asStateFlow()
@@ -182,11 +190,18 @@ class TpmsBleManager {
             return
         }
 
+        if (!BleManagerProvider.bleManager.isBleConnected()) {
+            Log.d(TAG, "TPMS waiting: ESP32 not connected yet")
+            _uiState.update { it.copy(cycleStatus = "Waiting for ESP32 connection") }
+            return
+        }
+
         _uiState.update { it.copy(cycleStatus = "Reading sensors…") }
         Log.d(TAG, "TPMS read cycle started")
 
-        readSensor(context, TpmsSensorPosition.FRONT, FRONT_SENSOR_MAC)
-        readSensor(context, TpmsSensorPosition.REAR, REAR_SENSOR_MAC)
+        readSensor(TpmsSensorPosition.FRONT, FRONT_SENSOR_MAC)
+        delay(BETWEEN_SENSORS_DELAY_MS)
+        readSensor(TpmsSensorPosition.REAR, REAR_SENSOR_MAC)
 
         val now = System.currentTimeMillis()
         val timeText = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(now))
@@ -203,94 +218,94 @@ class TpmsBleManager {
     }
 
     private suspend fun readSensor(
-        context: Context,
         position: TpmsSensorPosition,
         macAddress: String
-    ) {
-        val scope = serviceScope ?: appScope
+    ) = operationMutex.withLock {
         val label = position.name.lowercase().replaceFirstChar { it.uppercase() }
+        val scope = serviceScope ?: appScope
 
         updateSensorStatus(position, TpmsReadStatus.Scanning, null)
 
-        var peripheral: Peripheral? = null
-
         try {
-            Log.d(TAG, "Scan started for $label sensor ($macAddress)")
+            // Defensive: never start a new TPMS session while prior TPMS GATT is still open.
+            cleanupTpmsGatt()
 
-            val advertisement = withTimeoutOrNull(SCAN_TIMEOUT_MS) {
-                val scanner = Scanner()
-                scanner.advertisements.first { adv ->
-                    adv.address.equals(macAddress, ignoreCase = true)
+            val readCompleted = withTimeoutOrNull(SENSOR_READ_TIMEOUT_MS) {
+                Log.d(TAG, "Scan started for $label sensor ($macAddress)")
+                val advertisement = withTimeoutOrNull(SCAN_TIMEOUT_MS) {
+                    val scanner = Scanner()
+                    scanner.advertisements.first { adv ->
+                        adv.address.equals(macAddress, ignoreCase = true)
+                    }
                 }
-            }
+                Log.d(TAG, "Scan stopped for $label sensor")
 
-            if (advertisement != null) {
-                Log.d(TAG, "Sensor found: $label (${advertisement.address})")
-                peripheral = scope.peripheral(advertisement)
-            } else {
-                Log.d(TAG, "Scan timeout for $label; trying direct connect to $macAddress")
-                peripheral = scope.peripheral(macAddress)
-            }
+                tpmsPeripheralScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+                tpmsPeripheral = if (advertisement != null) {
+                    Log.d(TAG, "Sensor found: $label (${advertisement.address})")
+                    tpmsPeripheralScope!!.peripheral(advertisement)
+                } else {
+                    Log.d(TAG, "Sensor not found in scan; trying direct connect: $label ($macAddress)")
+                    tpmsPeripheralScope!!.peripheral(macAddress)
+                }
 
-            updateSensorStatus(position, TpmsReadStatus.Connecting, null)
-            Log.d(TAG, "Connecting to $label sensor ($macAddress)")
+                val peripheral = tpmsPeripheral!!
 
-            withTimeout(CONNECT_TIMEOUT_MS) {
-                peripheral.connect()
-            }
+                updateSensorStatus(position, TpmsReadStatus.Connecting, null)
+                Log.d(TAG, "Connect started for $label sensor ($macAddress)")
 
-            Log.d(TAG, "Connect success: $label ($macAddress)")
+                withTimeoutOrNull(CONNECT_TIMEOUT_MS) {
+                    peripheral.connect()
+                } ?: run {
+                    Log.e(TAG, "Connect timeout for $label sensor")
+                    return@withTimeoutOrNull false
+                }
+                Log.d(TAG, "Connect success for $label sensor")
+                Log.d(TAG, "Services discovered for $label sensor")
 
-            delay(POST_CONNECT_SETTLE_MS)
+                updateSensorStatus(position, TpmsReadStatus.Reading, null)
+                delay(POST_CONNECT_SETTLE_MS)
 
-            updateSensorStatus(position, TpmsReadStatus.Reading, null)
+                val rawBytes = readTpmsPayload(peripheral, label)
+                if (rawBytes == null) {
+                    updateSensorStatus(position, TpmsReadStatus.Failed, "No valid FFD1 payload (need >=2 bytes)")
+                    return@withTimeoutOrNull false
+                }
 
-            val rawBytes = readTpmsPayload(peripheral, label)
-            if (rawBytes == null) {
-                updateSensorStatus(
-                    position,
-                    TpmsReadStatus.Failed,
-                    "No valid FFD1 payload (need 2 bytes)"
+                Log.d(TAG, "FFD1 read result ($label): ${rawBytes.toHexString()}")
+
+                val decoded = decodeTpmsData(rawBytes)
+                if (decoded == null) {
+                    updateSensorStatus(position, TpmsReadStatus.Failed, "Invalid FFD1 data")
+                    return@withTimeoutOrNull false
+                }
+
+                val (temperatureC, pressureBar) = decoded
+                Log.d(
+                    TAG,
+                    "Decoded $label: pressure=${"%.3f".format(pressureBar)} bar, temperature=$temperatureC °C"
                 )
-                return
+                updateSensorReading(position, pressureBar, temperatureC)
+                sendToEsp32(position, pressureBar, temperatureC)
+                updateSensorStatus(position, TpmsReadStatus.Success, null)
+                true
             }
 
-            Log.d(TAG, "Raw FFD1 bytes ($label): ${rawBytes.toHexString()}")
-
-            val decoded = decodeTpmsData(rawBytes)
-            if (decoded == null) {
-                Log.e(TAG, "FFD1 decode failed for $label: ${rawBytes.toHexString()}")
-                updateSensorStatus(
-                    position,
-                    TpmsReadStatus.Failed,
-                    "Invalid FFD1 data"
-                )
-                return
+            if (readCompleted == null) {
+                Log.e(TAG, "Sensor read timeout ($label): ${SENSOR_READ_TIMEOUT_MS}ms")
+                updateSensorStatus(position, TpmsReadStatus.Failed, "Timeout")
             }
-
-            val (temperatureC, pressureBar) = decoded
-            Log.d(
-                TAG,
-                "Decoded $label: pressure=${"%.3f".format(pressureBar)} bar, temperature=$temperatureC °C"
-            )
-
-            updateSensorReading(position, pressureBar, temperatureC)
-            sendToEsp32(position, pressureBar, temperatureC)
-            updateSensorStatus(position, TpmsReadStatus.Success, null)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             Log.e(TAG, "Read failed for $label sensor ($macAddress)", e)
             updateSensorStatus(position, TpmsReadStatus.Failed, e.message ?: e.javaClass.simpleName)
         } finally {
-            peripheral?.let { activePeripheral ->
-                try {
-                    activePeripheral.disconnect()
-                    Log.d(TAG, "Disconnected from $label sensor")
-                } catch (e: Exception) {
-                    Log.e(TAG, "Disconnect failed for $label sensor", e)
-                }
-            }
+            cleanupTpmsGatt()
+            Log.d(
+                TAG,
+                "ESP32 still connected after TPMS cleanup: ${BleManagerProvider.bleManager.isBleConnected()}"
+            )
         }
     }
 
@@ -318,7 +333,7 @@ class TpmsBleManager {
         Log.d(TAG, "FFD1 READ retries exhausted for $label; trying NOTIFY on FFD1")
         return withTimeoutOrNull(NOTIFY_FALLBACK_TIMEOUT_MS) {
             peripheral.observe(tpmsReadCharacteristic).first { data ->
-                Log.d(TAG, "FFD1 notify ($label): ${data.toHexString()}")
+                Log.d(TAG, "FFD1 notification result ($label): ${data.toHexString()}")
                 isValidTpmsPayload(data)
             }
         }
@@ -333,7 +348,7 @@ class TpmsBleManager {
             withTimeoutOrNull(READ_TIMEOUT_MS) {
                 peripheral.read(tpmsReadCharacteristic)
             }?.also { bytes ->
-                Log.d(TAG, "FFD1 read ($label) attempt $attempt: ${bytes.toHexString()}")
+                Log.d(TAG, "FFD1 read result ($label) attempt $attempt: ${bytes.toHexString()}")
             } ?: run {
                 Log.e(TAG, "FFD1 read timed out ($label) attempt $attempt")
                 null
@@ -401,8 +416,8 @@ class TpmsBleManager {
         }
 
         val pressureMessage = when (position) {
-            TpmsSensorPosition.FRONT -> "TPMSF:${"%.2f".format(pressureBar)}"
-            TpmsSensorPosition.REAR -> "TPMSR:${"%.2f".format(pressureBar)}"
+            TpmsSensorPosition.FRONT -> String.format(Locale.US, "TPMSF:%.2f", pressureBar)
+            TpmsSensorPosition.REAR -> String.format(Locale.US, "TPMSR:%.2f", pressureBar)
         }
 
         val temperatureMessage = when (position) {
@@ -415,6 +430,38 @@ class TpmsBleManager {
 
         bleManager.sendText(temperatureMessage)
         Log.d(TAG, "ESP32 send queued: $temperatureMessage")
+    }
+
+    /**
+     * TPMS-only cleanup; never touches ESP32 BLE manager internals.
+     */
+    private suspend fun cleanupTpmsGatt() {
+        val peripheral = tpmsPeripheral
+        val scope = tpmsPeripheralScope
+
+        if (peripheral == null && scope == null) {
+            return
+        }
+
+        Log.d(TAG, "TPMS cleanup started")
+        try {
+            peripheral?.disconnect()
+            Log.d(TAG, "TPMS gatt disconnect completed")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error disconnecting TPMS GATT", e)
+        }
+
+        try {
+            scope?.cancel()
+            Log.d(TAG, "TPMS gatt closed")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error closing TPMS GATT", e)
+        }
+
+        tpmsPeripheral = null
+        tpmsPeripheralScope = null
+        Log.d(TAG, "TPMS cleanup finished")
+        delay(AFTER_TPMS_CLOSE_DELAY_MS)
     }
 
     private fun hasRequiredBlePermissions(context: Context): Boolean {
@@ -455,10 +502,13 @@ class TpmsBleManager {
         private const val SCAN_TIMEOUT_MS = 15_000L
         private const val CONNECT_TIMEOUT_MS = 10_000L
         private const val READ_TIMEOUT_MS = 10_000L
+        private const val SENSOR_READ_TIMEOUT_MS = 15_000L
         private const val POST_CONNECT_SETTLE_MS = 500L
         private const val READ_RETRY_COUNT = 3
         private const val READ_RETRY_DELAY_MS = 400L
         private const val NOTIFY_FALLBACK_TIMEOUT_MS = 8_000L
+        private const val BETWEEN_SENSORS_DELAY_MS = 1_000L
+        private const val AFTER_TPMS_CLOSE_DELAY_MS = 750L
 
         /**
          * True when FFD1 has at least 2 bytes and is not the invalid single-byte 0x00 payload.
