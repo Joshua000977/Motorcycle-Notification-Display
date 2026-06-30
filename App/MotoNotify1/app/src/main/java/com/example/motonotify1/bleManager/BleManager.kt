@@ -950,7 +950,7 @@ class BleManager {
     companion object {
         private const val TAG = "BleManager"
 
-        private const val TARGET_DEVICE_NAME = "MotoNotifyDisplay"
+        private const val TARGET_DEVICE_NAME = "MotoNotifyDisplay_GL"
 
         private const val NUS_SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
         private const val NUS_TX_CHARACTERISTIC_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
