@@ -279,53 +279,6 @@ The sensors provide values such as:
 * Sensor status
 * Battery level, if available
 
-## Features
-
-* Display incoming calls
-
-  * Caller name
-  * Phone number
-
-* Display selected smartphone notifications
-
-  * WhatsApp
-  * Other supported applications
-
-* Real-time TPMS monitoring
-
-  * Front tire pressure
-  * Rear tire pressure
-  * Front tire temperature
-  * Rear tire temperature
-  * Front TPMS sensor battery level
-  * Rear TPMS sensor battery level
-
-* Tire pressure warning states
-
-  * Normal
-  * Warning
-  * Critical
-
-* Smartphone battery level display
-
-* BLE communication between Android phone and ESP32
-
-* BLE communication between TPMS sensors and Android app
-
-* Works while the phone is locked
-
-* Real-time data updates
-
-* Automatic BLE reconnection
-
-* Persistent configuration values
-
-* Bike power system integration
-
-  * Powered from the motorcycle electrical system
-  * Startup together with the bike ignition
-
-* OTA firmware updates over Wi-Fi
 
 ## Future Improvements
 
