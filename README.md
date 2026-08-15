@@ -1,296 +1,199 @@
 # Motorcycle Notification & TPMS Display
 
-A compact embedded system that displays incoming calls, selected smartphone notifications, and real-time tire pressure data on a display mounted on a motorcycle.
+A compact motorcycle display system built around an ESP32-C3 and an Android application. It presents selected phone notifications, incoming-call information, phone battery status, and tire-pressure data on a handlebar-mounted TFT display.
 
-The system uses an Android app as the central communication hub. The app captures notifications and call information, receives TPMS sensor data via Bluetooth Low Energy (BLE), and forwards the relevant information to an ESP32-C3 Super Mini.
+The Android phone acts as the communication hub: it receives phone events and BLE TPMS data, filters and formats the relevant information, and forwards compact messages to the ESP32. The ESP32 handles parsing, warning logic, persistence, and display rendering.
 
-The ESP32 processes the received data and displays it in real time on a TFT display.
+> **Project status:** Active prototype. Phone-to-display BLE communication, notification rendering, and the embedded display foundation are implemented. TPMS integration and reliable background reconnection while the phone is locked are ongoing development areas.
 
 ## Features
 
-* Display incoming calls
+### Implemented
 
-  * Caller name
-  * Phone number
+- ESP32-C3 BLE peripheral named `MotoNotifyDisplay`
+- Android-to-ESP32 BLE connection
+- Display of selected phone notifications
+- Incoming-call information
+- Phone battery updates
+- Compact custom text protocol
+- TFT display rendering and idle screen
+- Persistent configuration on the ESP32
+- OTA firmware updates over Wi-Fi
+- Tire-pressure warning states in the embedded display logic
 
-* Display selected smartphone notifications
+### In Development
 
-  * WhatsApp
-  * Other supported applications
+- Stable Android background operation through a foreground service
+- Automatic reconnection when the ESP32 restarts while the phone is locked
+- Simultaneous Android BLE connections to the ESP32 and both TPMS sensors
+- Reliable pressure and temperature decoding for front and rear sensors
+- Forwarding live TPMS data to the ESP32
+- Android configuration UI for target pressures and warning thresholds
+- Final weatherproof motorcycle enclosure and power installation
 
-* Real-time TPMS monitoring
+### Planned
 
-  * Front tire pressure
-  * Rear tire pressure
-  * Front tire temperature
-  * Rear tire temperature
+- Per-app notification filters
+- Multiple motorcycle profiles
+- TPMS and temperature history
+- External warning LEDs or audible alerts
+- Navigation information
+- Ride statistics
 
-* Tire pressure warning states
+## System Overview
 
-  * Normal
-  * Warning
-  * Critical
-
-* BLE communication between Android phone and ESP32
-
-* BLE communication between TPMS sensors and Android app
-
-* Works while the phone is locked
-
-* Real-time data updates
-
-* Automatic BLE reconnection
-
-* Persistent configuration values
-
-## Architecture
-
-The Android app acts as the central bridge between the smartphone, TPMS sensors, and ESP32 display.
-
-```text
-                         Android Phone
-                ┌────────────────────────────┐
-                │                            │
-Notifications ─►│ NotificationListenerService│
-Calls ─────────►│ Call Information           │
-                │                            │
-TPMS Sensors ──►│ BLE TPMS Communication     │
-                │                            │
-                │ Data Processing            │
-                │ Filtering                  │
-                │ TPMS Value Handling        │
-                └─────────────┬──────────────┘
-                              │
-                              │ BLE
-                              ▼
-                ┌────────────────────────────┐
-                │ ESP32-C3 Super Mini        │
-                │                            │
-                │ BLE Receiver               │
-                │ Message Parsing            │
-                │ TPMS Warning Logic         │
-                │ Display Logic              │
-                └─────────────┬──────────────┘
-                              │
-                              ▼
-                ┌────────────────────────────┐
-                │ TFT / OLED Display         │
-                │                            │
-                │ Calls                      │
-                │ Notifications              │
-                │ Front Tire Pressure        │
-                │ Rear Tire Pressure         │
-                │ Tire Temperature           │
-                │ Warning Status             │
-                └────────────────────────────┘
+```mermaid
+flowchart TD
+    PHONE["Android phone"] --> APP["Android application"]
+    FRONT["Front TPMS sensor"] --> APP
+    REAR["Rear TPMS sensor"] --> APP
+    APP --> ESP["ESP32-C3 display unit"]
+    ESP --> TFT["TFT display"]
 ```
 
-## Data Flow
+The phone handles Android permissions, notification access, calls, background execution, and BLE central connections. The ESP32 remains focused on receiving compact messages and presenting information clearly while riding.
 
-### Notifications and Calls
+See [motonotify_ARCHITECTURE.md](motonotify_ARCHITECTURE.md) for component responsibilities, BLE flows, message handling, reconnect behavior, and safety considerations.
 
-```text
-Android Notification / Incoming Call
-                │
-                ▼
-NotificationListenerService / Call Handling
-                │
-                ▼
-Android App
-                │
-                │ BLE
-                ▼
-ESP32-C3 Super Mini
-                │
-                ▼
-TFT / OLED Display
-```
+## Hardware
 
-### TPMS Data
+| Component | Purpose |
+|---|---|
+| Seeed Studio ESP32-C3 SuperMini | BLE receiver and display controller |
+| TFT display | Rider-facing interface |
+| Front BLE TPMS sensor | Front pressure and temperature |
+| Rear BLE TPMS sensor | Rear pressure and temperature |
+| Android phone | Notification, call, TPMS, and BLE hub |
+| Motorcycle power supply | Powers the embedded display unit |
 
-The TPMS sensors communicate directly with the Android app via BLE.
+## Technology
 
-The Android app receives the sensor values, processes them, and forwards the relevant data to the ESP32 through the existing BLE connection.
+### Embedded Firmware
 
-```text
-Front TPMS Sensor ─────┐
-                       │
-                       ▼
-                 Android App
-                       ▲
-                       │
-Rear TPMS Sensor ──────┘
-                       │
-                       │ BLE
-                       ▼
-             ESP32-C3 Super Mini
-                       │
-                       ▼
-              TFT  Display
-```
+- C++
+- Arduino framework
+- PlatformIO
+- NimBLE
+- TFT_eSPI
+- Persistent configuration storage
+- Arduino OTA
 
-This architecture allows the Android app to manage the TPMS sensor connections while the ESP32 remains focused on receiving data and controlling the display.
+### Android Application
 
-## BLE Communication
+- Kotlin
+- Android BLE APIs
+- `BluetoothGatt`
+- `NotificationListenerService`
+- Foreground-service architecture for reliable background communication
+- Notification filtering and message formatting
 
-The Android app sends data to the ESP32 using a custom BLE message protocol.
+### Communication
 
-### Example Notification Messages
+- Bluetooth Low Energy
+- Custom text-based message protocol
+- Android phone as BLE central
+- ESP32-C3 as BLE peripheral
+
+## BLE Message Protocol
+
+The protocol uses short, human-readable messages. A prefix identifies the message type and the remaining text contains its value.
+
+Examples:
 
 ```text
 CALL:John Doe
-```
-
-```text
 NOTIFY:WhatsApp: Alex
-```
-
-```text
 BAT:58
-```
-
-### Example TPMS Messages
-
-Individual values can be transmitted separately:
-
-```text
 FRONT:2.30
 REAR:2.20
 FTEMP:28
 RTEMP:31
 ```
 
+| Prefix | Meaning | Example value |
+|---|---|---|
+| `CALL` | Incoming call information | Caller name or number |
+| `NOTIFY` | Selected notification | Application and message summary |
+| `BAT` | Phone battery percentage | `58` |
+| `FRONT` | Front tire pressure | `2.30` bar |
+| `REAR` | Rear tire pressure | `2.20` bar |
+| `FTEMP` | Front tire temperature | `28` °C |
+| `RTEMP` | Rear tire temperature | `31` °C |
 
-### TPMS Message Fields
+The text format is easy to inspect during development and simple to parse on the ESP32. A versioned binary protocol can be introduced later if message size or throughput becomes a real limitation.
 
-| Field | Description            |
-| ----- | ---------------------- |
-| `F`   | Front tire pressure    |
-| `R`   | Rear tire pressure     |
-| `FT`  | Front tire temperature |
-| `RT`  | Rear tire temperature  |
+## Tire-Pressure Warning Logic
 
-### Tire Pressure Warning Logic
+Pressure warnings are calculated relative to configurable front and rear reference pressures.
 
-The pressure state is calculated relative to the configured reference pressure for each tire.
+Default reference values:
 
-| Status        | Condition                                                                                       |
-| ------------- | ----------------------------------------------------------------------------------------------- |
-| Normal        | Pressure is within the configured warning limits                                                |
-| Warning Low   | Pressure is below the reference pressure by more than `10%`                                     |
-| Critical Low  | Front: more than `15%` below reference pressure; Rear: more than `20%` below reference pressure |
-| Warning High  | Pressure is above the reference pressure by more than `15%`                                     |
-| Critical High | Pressure is above the reference pressure by more than `25%`                                     |
-| Critical      | Pressure is `<= 0 bar`                                                                          |
+| Tire | Reference pressure |
+|---|---:|
+| Front | 2.5 bar |
+| Rear | 2.8 bar |
 
-The default reference pressures are:
+| Status | Condition |
+|---|---|
+| Normal | Pressure is within the configured warning limits |
+| Warning low | More than 10% below the reference pressure |
+| Critical low | Front more than 15% low; rear more than 20% low |
+| Warning high | More than 15% above the reference pressure |
+| Critical high | More than 25% above the reference pressure |
+| Critical | Pressure is less than or equal to 0 bar |
 
-| Tire  | Reference Pressure |
-| ----- | ------------------ |
-| Front | `2.5 bar`          |
-| Rear  | `2.8 bar`          |
+The display uses a simple color hierarchy:
 
-With the default reference pressures, the resulting thresholds are:
+| State | Color |
+|---|---|
+| Normal | White |
+| Warning | Yellow |
+| Critical | Red |
 
-| Tire  | Critical Low  | Warning Low  | Normal Range       | Warning High  | Critical High |
-| ----- | ------------- | ------------ | ------------------ | ------------- | ------------- |
-| Front | `< 2.125 bar` | `< 2.25 bar` | `2.25 - 2.875 bar` | `> 2.875 bar` | `> 3.125 bar` |
-| Rear  | `< 2.24 bar`  | `< 2.52 bar` | `2.52 - 3.22 bar`  | `> 3.22 bar`  | `> 3.50 bar`  |
+Reference pressures and thresholds must be configured for the motorcycle, tires, load, and manufacturer recommendations used in the real installation.
 
-The front and rear reference pressures can be changed through the Android app and are stored persistently on the ESP32.
+## Building the Firmware
 
+1. Open the firmware project in Visual Studio Code with PlatformIO.
+2. Select the configured ESP32-C3 environment.
+3. Configure the display pins and TFT_eSPI setup for the installed hardware.
+4. Build and upload the firmware over USB.
+5. Configure Wi-Fi only if OTA updates are required.
 
-The display can use different colors for each state:
+After the first USB upload, later firmware versions can be installed through Arduino OTA when the device and development computer are on the same network.
 
-| Status   | Display Color |
-| -------- | ------------- |
-| Normal   | White         |
-| Warning  | Yellow        |
-| Critical | Red           |
+## Building the Android Application
 
-Target pressures and warning thresholds can be configured through the Android app and stored persistently on the ESP32.
+1. Open the Android project in Android Studio.
+2. Grant the required Bluetooth and notification permissions.
+3. Enable notification access for the application.
+4. Build and install the application on the Android phone.
+5. Connect the app to `MotoNotifyDisplay`.
+6. Configure the front and rear TPMS sensors when TPMS support is enabled.
 
-## Tech Stack
+Android background restrictions vary between phone manufacturers. Foreground-service behavior, battery optimization, and BLE reconnection must be tested on the actual phone used on the motorcycle.
 
-### Embedded System
+## Development Priorities
 
-* ESP32-C3 Super Mini
-* Arduino Framework
-* C++
-* NimBLE
-* TFT_eSPI
-* TFT display
-* Persistent configuration storage
-* OTA firmware updates
+1. Finish the foreground service and locked-phone reconnection behavior.
+2. Complete and verify both TPMS sensor connections.
+3. Validate pressure and temperature values against known measurements.
+4. Finish the Android configuration interface.
+5. Improve display layouts and connection indicators.
+6. Test reconnects, sensor loss, invalid values, and low battery conditions.
+7. Build and validate the weatherproof motorcycle installation.
 
-### Android Application
+## Safety
 
-* Kotlin
-* Android BLE API
-* `NotificationListenerService`
-* Foreground Service
-* `BluetoothGatt`
-* Notification filtering
-* Automatic BLE reconnection
-* TPMS sensor communication
-* TPMS data forwarding
+This is a personal prototype and not a certified tire-pressure monitoring system. It should supplement, not replace:
 
-### Communication
+- Manual pressure checks with a reliable gauge
+- Motorcycle manufacturer pressure recommendations
+- Regular tire inspection
+- Approved motorcycle instruments and warning systems
 
-* Bluetooth Low Energy
-* Custom BLE message protocol
-* Real-time updates
+The interface should not encourage interaction while riding. Alerts must be readable at a glance, and configuration should be performed while stationary.
 
-## System Components
+## License
 
-### ESP32 Display Unit
-
-Responsible for:
-
-* Receiving BLE messages from the Android app
-* Parsing notification data
-* Parsing TPMS data
-* Evaluating pressure warning thresholds
-* Updating the display
-* Storing configuration values
-* Handling OTA firmware updates
-
-### Android Application
-
-Responsible for:
-
-* Capturing selected notifications
-* Detecting incoming calls
-* Maintaining the BLE connection to the ESP32
-* Connecting to the TPMS sensors
-* Reading tire pressure and temperature values
-* Forwarding TPMS values to the ESP32
-* Running BLE communication while the phone is locked
-* Automatically reconnecting after connection loss
-
-### TPMS Sensors
-
-The motorcycle uses separate BLE TPMS sensors for the front and rear tires.
-
-The sensors provide values such as:
-
-* Tire pressure
-* Tire temperature
-* Sensor status
-* Battery level, if available
-
-
-## Future Improvements
-
-* Configurable notification filtering
-* Per-app notification settings
-* Vibration alerts
-* External warning LEDs
-* Audible critical pressure alerts
-* Configurable pressure thresholds in the Android app
-* Multiple motorcycle profiles
-* GPS navigation information
-* TPMS pressure history
-* TPMS temperature history
-* Ride statistics
-
+This project is licensed under the [MIT License](LICENSE)
