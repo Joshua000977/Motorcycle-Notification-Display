@@ -53,7 +53,7 @@ flowchart TD
 
 The phone handles Android permissions, notification access, calls, background execution, and BLE central connections. The ESP32 remains focused on receiving compact messages and presenting information clearly while riding.
 
-See [motonotify_ARCHITECTURE.md](motonotify_ARCHITECTURE.md) for component responsibilities, BLE flows, message handling, reconnect behavior, and safety considerations.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for component responsibilities, BLE flows, message handling, reconnect behavior, and safety considerations.
 
 ## Hardware
 
